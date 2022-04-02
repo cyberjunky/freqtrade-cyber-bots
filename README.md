@@ -39,11 +39,18 @@ NOTE: the 'Trading 24h minimal volume' value in your botassistexplorer config ca
 
 
 NOTE2: I have only tested this with an activated freqtrade python3 enviroment.
-You may need in install python packages after activating
+You may need in install python packages after activating python enviroment.
 
 ```
 pip3 install -r requirements.txt
 ```
+
+If you want to run in from a script do this:
+```
+/home/ron/freqtrade/.env/bin/python3 /home/ron/freqtrade-cyber-bots/botassistexplorer.py
+```
+
+Also see example service file in scripts directory.
 
 You also need to activate the api-server in your freqtrade config file and fill in proper username and password
 ```
