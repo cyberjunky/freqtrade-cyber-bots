@@ -1,0 +1,13 @@
+[Unit]
+Description=Freqtrade BotAssistExplorer Daemon
+After=multi-user.target
+
+[Service]
+# Set WorkingDirectory and ExecStart to your file paths accordingly
+WorkingDirectory=/home/ron/freqtrade-cyber-bots
+ExecStart=/home/ron/freqtrade/.env/bin/python3 /home/ron/freqtrade-cyber-bots/botassistexplorer.py
+User=ron
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
