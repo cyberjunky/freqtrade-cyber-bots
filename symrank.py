@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cyberjunky's 3Commas bot helpers."""
+"""Cyberjunky's Freqtrade bot helpers."""
 import argparse
 import configparser
 import json
