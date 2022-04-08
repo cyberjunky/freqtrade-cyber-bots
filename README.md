@@ -57,6 +57,13 @@ You also need to activate the api-server in your freqtrade config file and fill 
 api_server": {
         "enabled": true,
 ```
+If you get json errors when running make sure your freqtrade config file is valid json. 
+I noticed that freqtrade syntax checker is not so strict as it should be, for example if you have a ',' at the end of a section you get an error. 
+If this happens check the config file with below command, if it displays the content of the file it is valid, if not you will see the line number with the problem. 
+
+```
+python3 -m json.tool ./config-example.json 
+```
 
 ### Configuration
 
