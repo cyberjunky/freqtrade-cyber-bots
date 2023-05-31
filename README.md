@@ -1,6 +1,6 @@
 # Freqtrade Cyber Bot Helpers <a href="https://github.com/cyberjunky/freqtrade-cyber-bots/blob/main/README.md#donate"><img src="https://img.shields.io/badge/Donate-PayPal-green.svg" height="40" align="right"></a> 
 
-A collection of Freqtrade bot helpers I wrote. (collection will grow over time)
+A collection of Freqtrade bot helpers and strategies. (collection will grow over time)
 
 <img src="images/robots.jpg"></a> 
 
