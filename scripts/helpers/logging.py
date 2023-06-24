@@ -1,7 +1,58 @@
+"""Cyberjunky's Freqtrade bot helpers."""
+import json
 import logging
 import os
+import queue
+import threading
 import time
 from logging.handlers import TimedRotatingFileHandler as _TimedRotatingFileHandler
+
+import apprise
+
+
+class NotificationHandler:
+    """Notification class."""
+
+    def __init__(self, program, enabled=False, notify_urls=None):
+        self.program = program
+        self.message = ""
+
+        if enabled and notify_urls:
+            self.apobj = apprise.Apprise()
+            urls = json.loads(notify_urls)
+            for url in urls:
+                self.apobj.add(url)
+            self.queue = queue.Queue()
+            self.start_worker()
+            self.enabled = True
+        else:
+            self.enabled = False
+
+    def start_worker(self):
+        """Start notification worker."""
+        threading.Thread(target=self.process_queue, daemon=True).start()
+
+    def process_queue(self):
+        """Process the queue."""
+        while True:
+            message, attachments = self.queue.get()
+            if attachments:
+                self.apobj.notify(body=message, attach=attachments)
+            else:
+                self.apobj.notify(body=message)
+            self.queue.task_done()
+
+    def queue_notification(self, message):
+        """Queue notification messages."""
+        if self.enabled:
+            self.message += f"{message}\n\n"
+
+    def send_notification(self):
+        """Send the notification messages if there are any."""
+        if self.enabled and self.message:
+            msg = f"[Freqtrade Cyber Bot-Helper {self.program}]\n\n" + self.message
+            self.queue.put((msg, []))
+            self.message = ""
 
 
 class TimedRotatingFileHandler(_TimedRotatingFileHandler):
@@ -70,13 +121,17 @@ class Logger:
         self,
         datadir,
         program,
+        notificationhandler,
         logstokeep,
-        debug_enabled
+        debug_enabled,
+        notify_enabled,
     ):
         """Logger init."""
-        self.my_logger = logging.getLogger(program)
+        self.my_logger = logging.getLogger()
         self.datadir = datadir
         self.program = program
+        self.notify_enabled = notify_enabled
+        self.notificationhandler = notificationhandler
 
         if debug_enabled:
             self.my_logger.setLevel(logging.DEBUG)
@@ -93,27 +148,29 @@ class Logger:
             f"%(asctime)s - {program} - %(levelname)s - %(message)s", date_fmt
         )
         # Create directory if not exists
-        #if not os.path.exists(f"{self.datadir}/logs"):
-        #    os.makedirs(f"{self.datadir}/logs")
+        if not os.path.exists(f"{self.datadir}/logs"):
+            os.makedirs(f"{self.datadir}/logs")
 
         # Log to file and rotate if needed
-        #file_handle = TimedRotatingFileHandler(
-        #    filename=f"{self.datadir}/logs/{self.program}.log", backupCount=logstokeep, encoding='utf-8'
-        #)
-        #file_handle.setFormatter(formatter)
-        #self.my_logger.addHandler(file_handle)
+        file_handle = TimedRotatingFileHandler(
+            filename=f"{self.datadir}/logs/{self.program}.log", backupCount=logstokeep
+        )
+        file_handle.setFormatter(formatter)
+        self.my_logger.addHandler(file_handle)
 
         # Log to console
         console_handle = logging.StreamHandler()
-        if debug_enabled:
-            console_handle.setLevel(logging.DEBUG)
-        else:
-            console_handle.setLevel(logging.INFO)
+        console_handle.setLevel(logging.INFO)
         console_handle.setFormatter(console_formatter)
         self.my_logger.addHandler(console_handle)
 
-        self.info(f"FreqTrade-Helper {program}")
+        self.info(f"Freqtrade Cyber Bot-Helper {program}")
         self.info("Started on %s" % time.strftime("%A %H:%M:%S %Y-%m-%d"))
+
+        if self.notify_enabled:
+            self.info("Notifications are enabled")
+        else:
+            self.info("Notifications are disabled")
 
     def log(self, message, level="info"):
         """Call the log levels."""
@@ -129,15 +186,23 @@ class Logger:
     def info(self, message, notify=False):
         """Info level."""
         self.log(message, "info")
+        if self.notify_enabled and notify:
+            self.notificationhandler.queue_notification(message)
 
     def warning(self, message, notify=True):
         """Warning level."""
         self.log(message, "warning")
+        if self.notify_enabled and notify:
+            self.notificationhandler.queue_notification(message)
 
     def error(self, message, notify=True):
         """Error level."""
         self.log(message, "error")
+        if self.notify_enabled and notify:
+            self.notificationhandler.queue_notification(message)
 
     def debug(self, message, notify=False):
         """Debug level."""
         self.log(message, "debug")
+        if self.notify_enabled and notify:
+            self.notificationhandler.queue_notification(message)
