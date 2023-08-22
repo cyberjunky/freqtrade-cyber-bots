@@ -1,7 +1,7 @@
 from numpy import nan as npNaN
 from pandas import DataFrame
-from pandas_ta.overlap import hl2
-from pandas_ta.volatility import atr
+from pandas_ta.overlap import hl2, sma
+from pandas_ta.volatility import atr, true_range
 from pandas_ta.utils import get_offset, verify_series
 
 ### This supertrend indicator is a copy of pandas-ta. The functionality is the same, 
@@ -14,7 +14,7 @@ from pandas_ta.utils import get_offset, verify_series
 ##  - renamed `hl2_` to `middleband_value`
 ##  - add match case (switch case in Python, supported from 3.10)
 
-def supertrend(open, high, low, close, length=None, multiplier=None, source='hl2', offset=None, **kwargs):
+def supertrend(open, high, low, close, length=None, multiplier=None, source='hl2', change_atr_calculation=False, offset=None, **kwargs):
     """Supertrend (supertrend)
 
 Supertrend is an overlap indicator. It is used to help identify trend
@@ -85,20 +85,25 @@ Returns:
     dir_, trend = [1] * m, [0] * m
     long, short = [npNaN] * m, [npNaN] * m
 
-    middleband_value = 0.0 
-    match source:
-        case 'open':
-            middleband_value = open
-        case 'high':
-            middleband_value = high
-        case 'low':
-            middleband_value = low
-        case 'close':
-            middleband_value = close
-        case _:
-            middleband_value = hl2(high, low)
+    middleband_value = 0.0
 
-    matr = multiplier * atr(high, low, close, length)
+    if source == "open":
+        middleband_value = open
+    elif source == "high":
+        middleband_value = high
+    elif source == "low":
+        middleband_value = low
+    elif source == "close":
+        middleband_value = close
+    else:
+        middleband_value = hl2(high, low)
+
+    matr = multiplier
+    if change_atr_calculation:
+        matr *= atr(high, low, close, length)
+    else:
+        matr *= sma(true_range(high, low, close), length)
+
     upperband = middleband_value + matr
     lowerband = middleband_value - matr
 
@@ -109,10 +114,11 @@ Returns:
             dir_[i] = -1
         else:
             dir_[i] = dir_[i - 1]
-            if dir_[i] > 0 and lowerband.iloc[i] < lowerband.iloc[i - 1]:
-                lowerband.iloc[i] = lowerband.iloc[i - 1]
-            if dir_[i] < 0 and upperband.iloc[i] > upperband.iloc[i - 1]:
-                upperband.iloc[i] = upperband.iloc[i - 1]
+
+        if dir_[i] > 0 and lowerband.iloc[i] < lowerband.iloc[i - 1]:
+            lowerband.iloc[i] = lowerband.iloc[i - 1]
+        if dir_[i] < 0 and upperband.iloc[i] > upperband.iloc[i - 1]:
+            upperband.iloc[i] = upperband.iloc[i - 1]
 
         if dir_[i] > 0:
             trend[i] = long[i] = lowerband.iloc[i]
