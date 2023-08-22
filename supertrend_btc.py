@@ -41,17 +41,14 @@ class SupertrendBTC(BaseSupertrendStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.0.0"
+    STRATEGY_VERSION = "2.0.0"
 
     # Optimal timeframe for the strategy.
     timeframe = '5m'
 
     minimal_roi = {
-        "0": 0.0015
+        "0": 0.005
     }
-  
-    # Number of candles the strategy requires before producing valid signals
-    startup_candle_count = 200
 
     @property
     def plot_config(self):
@@ -77,27 +74,25 @@ class SupertrendBTC(BaseSupertrendStrategy):
         """
 
         # Leverage configuration for this strategy
-        self.leverage_configuration["BTC/USDT:USDT_long"] = 10.0
-        self.leverage_configuration["BTC/USDT:USDT_short"] = 10.0
+        self.leverage_configuration["BTC/USDT:USDT_long"] = 100.0
+        self.leverage_configuration["BTC/USDT:USDT_short"] = 100.0
 
-        # Stoploss configuration for this strategy
-        self.stoploss_configuration["BTC/USDT:USDT_long"] = 10.0
-        self.stoploss_configuration["BTC/USDT:USDT_short"] = 10.0
+        # No stoploss configuration for this strategy (use default of 99%)
 
         # Setup Safety Order configuration for this strategy
         self.safety_order_configuration["BTC/USDT:USDT_long"] = {}
-        self.safety_order_configuration["BTC/USDT:USDT_long"]["initial_so_amount"] = config["stake_amount"]
+        self.safety_order_configuration["BTC/USDT:USDT_long"]["initial_so_amount"] = (config["stake_amount"] * 2)
         self.safety_order_configuration["BTC/USDT:USDT_long"]["price_deviation"] = 1.0
-        self.safety_order_configuration["BTC/USDT:USDT_long"]["volume_scale"] = 2.0
-        self.safety_order_configuration["BTC/USDT:USDT_long"]["step_scale"] = 1.0
-        self.safety_order_configuration["BTC/USDT:USDT_long"]["max_so"] = 5
+        self.safety_order_configuration["BTC/USDT:USDT_long"]["volume_scale"] = 1.15
+        self.safety_order_configuration["BTC/USDT:USDT_long"]["step_scale"] = 0.98
+        self.safety_order_configuration["BTC/USDT:USDT_long"]["max_so"] = 40
 
         self.safety_order_configuration["BTC/USDT:USDT_short"] = {}
-        self.safety_order_configuration["BTC/USDT:USDT_short"]["initial_so_amount"] = config["stake_amount"]
+        self.safety_order_configuration["BTC/USDT:USDT_short"]["initial_so_amount"] = (config["stake_amount"] * 2)
         self.safety_order_configuration["BTC/USDT:USDT_short"]["price_deviation"] = 1.0
-        self.safety_order_configuration["BTC/USDT:USDT_short"]["volume_scale"] = 2.0
-        self.safety_order_configuration["BTC/USDT:USDT_short"]["step_scale"] = 1.0
-        self.safety_order_configuration["BTC/USDT:USDT_short"]["max_so"] = 5
+        self.safety_order_configuration["BTC/USDT:USDT_short"]["volume_scale"] = 1.15
+        self.safety_order_configuration["BTC/USDT:USDT_short"]["step_scale"] = 0.95
+        self.safety_order_configuration["BTC/USDT:USDT_short"]["max_so"] = 30
 
         # Trailing Safety Order configuration for this strategy
         self.trailing_safety_order_configuration["default"][0]["start_percentage"] = 0.15
@@ -134,7 +129,7 @@ class SupertrendBTC(BaseSupertrendStrategy):
         dataframe = super().populate_indicators(dataframe, metadata)
         
         # EMA
-        dataframe['ema_99'] = pta.ema(dataframe['close'], 99)
+        #dataframe['ema_99'] = pta.ema(dataframe['close'], 99)
 
         # Inspect the last 5 rows
         #if self.logger:
@@ -159,7 +154,7 @@ class SupertrendBTC(BaseSupertrendStrategy):
             dataframe.loc[
                 (
                     pd.notnull(dataframe['long']) &
-                    (dataframe['close'] < dataframe['ema_99']) &
+                    #(dataframe['close'] < dataframe['ema_99']) &
                     (dataframe['direction'] > 0) &
                     (dataframe['direction'].shift(1) < 0) &
                     (dataframe['volume'] > 0)  # Make sure Volume is not 0
@@ -172,7 +167,7 @@ class SupertrendBTC(BaseSupertrendStrategy):
             dataframe.loc[
                 (
                     pd.notnull(dataframe['short']) &
-                    (dataframe['close'] > dataframe['ema_99']) &
+                    #(dataframe['close'] > dataframe['ema_99']) &
                     (dataframe['direction'] < 0) &
                     (dataframe['direction'].shift(1) > 0) &
                     (dataframe['volume'] > 0)  # Make sure Volume is not 0
