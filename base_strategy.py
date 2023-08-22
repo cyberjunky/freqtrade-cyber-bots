@@ -54,7 +54,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.0.0"
+    STRATEGY_VERSION = "1.0.1"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -115,7 +115,7 @@ class BaseStrategy(IStrategy):
         
         # Update minimum ROI table keeping leverage into account
         # TODO: improve later on with custom exit with profit and leverage calculation for each pair
-        leverage = min(self.leverage_configuration.values())
+        leverage = min(self.leverage_configuration.values()) if len(self.leverage_configuration) > 0 else 1.0
 
         self.logger.info(
             f"Update minimal ROI keeping leverage of {leverage} into account."
