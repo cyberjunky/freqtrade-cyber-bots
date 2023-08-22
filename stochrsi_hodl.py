@@ -5,7 +5,7 @@
 import numpy as np
 import pandas as pd
 from pandas import DataFrame
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Union
 
 from freqtrade.strategy import (BooleanParameter, CategoricalParameter, DecimalParameter,
@@ -42,10 +42,10 @@ class StochRSI_Hodl(BaseStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.0.0"
+    STRATEGY_VERSION = "1.0.1"
 
     # Optimal timeframe for the strategy.
-    timeframe = '1d'
+    timeframe = '1h'
 
     minimal_roi = {
         "0": 10.00
@@ -56,6 +56,8 @@ class StochRSI_Hodl(BaseStrategy):
 
     # Enable position adjustment
     position_adjustment_enable = True
+
+    use_exit_signal = True
 
     @property
     def plot_config(self):
@@ -135,7 +137,7 @@ class StochRSI_Hodl(BaseStrategy):
 
         # Inspect the last 5 rows
         #if self.logger:
-        #    self.logger.debug(
+        #    self.logger.info(
         #        f"populate_entry_trend:\n{dataframe.tail()}"
         #    )
 
@@ -153,15 +155,15 @@ class StochRSI_Hodl(BaseStrategy):
         if current_profit <= 0.0:
             return False
         
-        # Do not exit when the trade didn't cross
-        if not qtpylib.crossed_above(dataframe['stochrsi_k'], 80):
+        # Do not exit when the trade is below the value
+        if dataframe['stochrsi_k'].iloc[-1] <= 80:
             return False
 
-        # Trade is in profit and crossed the value, so exit
+        # Trade is in profit and above the value, so exit
         return True
 
 
-def adjust_trade_position(self, trade: 'Trade', current_time: datetime,
+    def adjust_trade_position(self, trade: 'Trade', current_time: datetime,
                               current_rate: float, current_profit: float,
                               min_stake: Optional[float], max_stake: float,
                               current_entry_rate: float, current_exit_rate: float,
@@ -193,12 +195,15 @@ def adjust_trade_position(self, trade: 'Trade', current_time: datetime,
                        Return None for no action.
         """
 
+        if self.is_pair_locked(trade.pair):
+            return None
+
         # Obtain pair dataframe (just to show how to access it)
         dataframe, _ = self.dp.get_analyzed_dataframe(trade.pair, self.timeframe)
 
         # Only buy extra when we are below 20. Freqtrade should limit the amount of buys to 1 per candle
         # avoiding an extra buy in the same candle as where the buy is placed
-        if dataframe['stochrsi_k'] >= 20:
+        if dataframe['stochrsi_k'].iloc[-1] >= 20:
             return None
 
         filled_entries = trade.select_filled_orders(trade.entry_side)
@@ -207,8 +212,19 @@ def adjust_trade_position(self, trade: 'Trade', current_time: datetime,
             # This returns first order stake size, which we want to increase our position with
             stake_amount = filled_entries[0].stake_amount
 
+            # Lock pair to prevent additional buys in this candle. Freqtrade will automatically
+            # round up the time to the end of the candle, so 1 minute will be rounded up to the
+            # end of the current candle (no matter which timeframe)
+            self.lock_pair(trade.pair, until=datetime.now(timezone.utc) + timedelta(minutes=1))
+
+            if self.logger:
+                self.logger.info(
+                    f"Adjust position with {stake_amount} and lock pair {trade.pair} for the current candle!"
+                )
+
             return stake_amount
         except Exception as exception:
+            self.logger.info(f"Exception: {exception}")
             return None
 
         return None
