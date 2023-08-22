@@ -26,7 +26,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent))
 
 # Strategy modules
-from helpers.logging import Logger
+import logging
+from freqtrade.constants import Config
 
 class BaseStrategy(IStrategy):
     """
@@ -53,6 +54,8 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
+    STRATEGY_VERSION = "1.0.0"
+
     # Optimal timeframe for the strategy.
     timeframe = '1h'
 
@@ -71,6 +74,10 @@ class BaseStrategy(IStrategy):
     # Set to -99% to actually disable the stoploss
     stoploss = -0.99
 
+    # Stoploss configuration
+    use_custom_stoploss = True
+    stoploss_configuration = {}
+
     # Trailing stoploss
     trailing_stop = False
 
@@ -85,28 +92,54 @@ class BaseStrategy(IStrategy):
     # Number of candles the strategy requires before producing valid signals
     startup_candle_count = 1
 
-    # Optional order type mapping.
-    order_types = {
-        'entry': 'limit',
-        'exit': 'limit',
-        'stoploss': 'market',
-        'stoploss_on_exchange': False
-    }
+    # Leverage configuration
+    leverage_configuration = {}
 
-    # Optional order time in force.
-    order_time_in_force = {
-        'entry': 'GTC',
-        'exit': 'GTC'
-    }
+
+    def __init__(self, config: Config) -> None:
+        """
+        Called upon construction of this class. Validate data and initialize
+        all attributes,
+        """
+
+        # Initialize logger
+        self.logger = logging.getLogger("freqtrade.strategy")
+
+        # Make sure the contents of the Leverage configuration is correct
+        for k, v in self.leverage_configuration.items():
+            self.leverage_configuration[k] = float(v)
+
+        # Make sure the contents of the Stoploss configuration is correct
+        for k, v in self.stoploss_configuration.items():
+            self.stoploss_configuration[k] = float(v)
+        
+        # Update minimum ROI table keeping leverage into account
+        # TODO: improve later on with custom exit with profit and leverage calculation for each pair
+        leverage = min(self.leverage_configuration.values())
+
+        self.logger.info(
+            f"Update minimal ROI keeping leverage of {leverage} into account."
+        )
+
+        for k, v in self.minimal_roi.items():
+            self.minimal_roi[k] = round(v * leverage, 4)
+
+        # Call to super
+        super().__init__(config)
+
 
     def bot_start(self, **kwargs) -> None:
         """
         Called only once after bot instantiation.
         :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
         """
-        if self.config['runmode'].value in ('live', 'dry_run'):
-            # Initialise logging
-            self.logger = Logger(os.getcwd(), "Custom Strategy", 7, True)
+    
+        # Call to super first
+        super().bot_start()
+
+        self.logger.info(f"Running with stoploss configuration: '{self.stoploss_configuration}'")
+        self.logger.info(f"Running with leverage configuration: '{self.leverage_configuration}'")
+
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
@@ -121,7 +154,8 @@ class BaseStrategy(IStrategy):
         """
 
         return dataframe
-    
+
+
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
         Based on TA indicators, populates the entry signal for the given dataframe
@@ -132,6 +166,7 @@ class BaseStrategy(IStrategy):
 
         return dataframe
 
+
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
         Based on TA indicators, populates the exit signal for the given dataframe
@@ -141,3 +176,56 @@ class BaseStrategy(IStrategy):
         """
 
         return dataframe
+
+
+    def leverage(self, pair: str, current_time: datetime, current_rate: float,
+                 proposed_leverage: float, max_leverage: float, entry_tag: Optional[str], side: str,
+                 **kwargs) -> float:
+        """
+        Customize leverage for each new trade. This method is only called in futures mode.
+
+        :param pair: Pair that's currently analyzed
+        :param current_time: datetime object, containing the current datetime
+        :param current_rate: Rate, calculated based on pricing settings in exit_pricing.
+        :param proposed_leverage: A leverage proposed by the bot.
+        :param max_leverage: Max leverage allowed on this pair
+        :param entry_tag: Optional entry_tag (buy_tag) if provided with the buy signal.
+        :param side: 'long' or 'short' - indicating the direction of the proposed trade
+        :return: A leverage amount, which is between 1.0 and max_leverage.
+        """
+
+        pairkey = f"{pair}_{side}"
+        if pairkey in self.leverage_configuration:
+            return self.leverage_configuration[pairkey]
+        else:
+            return 1.0
+
+
+    def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime,
+                        current_rate: float, current_profit: float, **kwargs) -> float:
+        """
+        Custom stoploss logic, returning the new distance relative to current_rate (as ratio).
+        e.g. returning -0.05 would create a stoploss 5% below current_rate.
+        The custom stoploss can never be below self.stoploss, which serves as a hard maximum loss.
+
+        For full documentation please go to https://www.freqtrade.io/en/latest/strategy-advanced/
+
+        When not implemented by a strategy, returns the initial stoploss value
+        Only called when use_custom_stoploss is set to True.
+
+        :param pair: Pair that's currently analyzed
+        :param trade: trade object.
+        :param current_time: datetime object, containing the current datetime
+        :param current_rate: Rate, calculated based on pricing settings in exit_pricing.
+        :param current_profit: Current profit (as ratio), calculated based on current_rate.
+        :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
+        :return float: New stoploss value, relative to the current rate
+        """
+
+        sl = self.stoploss
+
+        pairkey = f"{pair}_{trade.trade_direction}"
+        if pairkey in self.stoploss_configuration:
+            sl = self.stoploss_configuration[pairkey] * self.leverage_configuration[pairkey]
+
+        return sl
