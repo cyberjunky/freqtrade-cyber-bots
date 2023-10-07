@@ -54,7 +54,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.2.1"
+    STRATEGY_VERSION = "1.2.2"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -175,6 +175,9 @@ class BaseStrategy(IStrategy):
         :return: DataFrame with entry columns populated
         """
 
+        dataframe.loc[:,'enter_long'] = 0
+        dataframe.loc[:,'enter_short'] = 0
+
         return dataframe
 
 
@@ -185,6 +188,9 @@ class BaseStrategy(IStrategy):
         :param metadata: Additional information, like the currently traded pair
         :return: DataFrame with exit columns populated
         """
+
+        dataframe.loc[:,'exit_long'] = 0
+        dataframe.loc[:,'exit_short'] = 0
 
         return dataframe
 
