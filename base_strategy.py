@@ -54,7 +54,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.2.0"
+    STRATEGY_VERSION = "1.2.1"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -248,7 +248,7 @@ class BaseStrategy(IStrategy):
             return 1.0
 
 
-    def custom_stoploss(self, pair: str, trade: Trade, current_time: datetime, current_rate: float,
+    def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float,
                         current_profit: float, after_fill: bool, **kwargs) -> Optional[float]:
         """
         Custom stoploss logic, returning the new distance relative to current_rate (as ratio).
