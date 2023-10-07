@@ -54,7 +54,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.1.0"
+    STRATEGY_VERSION = "1.2.2"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -175,6 +175,9 @@ class BaseStrategy(IStrategy):
         :return: DataFrame with entry columns populated
         """
 
+        dataframe.loc[:,'enter_long'] = 0
+        dataframe.loc[:,'enter_short'] = 0
+
         return dataframe
 
 
@@ -185,6 +188,9 @@ class BaseStrategy(IStrategy):
         :param metadata: Additional information, like the currently traded pair
         :return: DataFrame with exit columns populated
         """
+
+        dataframe.loc[:,'exit_long'] = 0
+        dataframe.loc[:,'exit_short'] = 0
 
         return dataframe
 
@@ -248,8 +254,8 @@ class BaseStrategy(IStrategy):
             return 1.0
 
 
-    def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime,
-                        current_rate: float, current_profit: float, **kwargs) -> float:
+    def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float,
+                        current_profit: float, after_fill: bool, **kwargs) -> Optional[float]:
         """
         Custom stoploss logic, returning the new distance relative to current_rate (as ratio).
         e.g. returning -0.05 would create a stoploss 5% below current_rate.
@@ -265,6 +271,7 @@ class BaseStrategy(IStrategy):
         :param current_time: datetime object, containing the current datetime
         :param current_rate: Rate, calculated based on pricing settings in exit_pricing.
         :param current_profit: Current profit (as ratio), calculated based on current_rate.
+        :param after_fill: True if the stoploss is called after the order was filled.
         :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
         :return float: New stoploss value, relative to the current rate
         """
