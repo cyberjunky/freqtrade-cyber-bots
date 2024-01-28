@@ -39,7 +39,7 @@ class DCAStrategy(BaseStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.2.0"
+    STRATEGY_VERSION = "1.2.1"
 
     # Max number of safety orders (-1 means disabled)
     max_entry_position_adjustment = -1
@@ -89,7 +89,7 @@ class DCAStrategy(BaseStrategy):
 
         # Try to get the trading direction from the config and validate when present
         if "trading_direction" in config:
-            if config["trading_direction"] not in ("long", "short", "long_short"):
+            if config["trading_direction"] in ("long", "short", "long_short"):
                 self.trading_direction = config["trading_direction"]
 
         # First make sure the contents of the (Trailing) Safety Order configuration is correct
@@ -140,7 +140,12 @@ class DCAStrategy(BaseStrategy):
 
         # Display Safety Order configuration...
         for pairkey in self.safety_order_configuration:
-            pair, direction = pairkey.split("_")
+            pair = pairkey
+            direction = self.trading_direction
+
+            if pairkey != "default":
+                pair, direction = pairkey.split("_")
+
             self.logger.info(f"Safety Order overview for '{pair}' in direction '{direction}':")
 
             self.logger.info(
@@ -246,7 +251,10 @@ class DCAStrategy(BaseStrategy):
         if self.max_entry_position_adjustment == -1:
             return None
 
+        # Create pairkey, or use 'default' 
         pairkey = f"{trade.pair}_{trade.trade_direction}"
+        if pairkey not in self.safety_order_configuration:
+            pairkey = "default"
 
         # Return when all Safety Orders are executed
         count_of_entries = trade.nr_of_successful_entries
