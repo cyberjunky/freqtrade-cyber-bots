@@ -16,7 +16,7 @@ from freqtrade.strategy import (BooleanParameter, CategoricalParameter, DecimalP
 # Add your lib to import here
 from freqtrade.constants import Config
 
-from base_strategy import BaseStrategy
+from .base_strategy import BaseStrategy
 class DCAStrategy(BaseStrategy):
     """
     This is a strategy template to get you started.

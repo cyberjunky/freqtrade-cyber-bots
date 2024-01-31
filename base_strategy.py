@@ -17,14 +17,6 @@ import talib.abstract as ta
 import pandas_ta as pta
 from technical import qtpylib
 
-# Strategy lib imports
-import os
-
-# Strategy local search path for own modules
-import sys
-from pathlib import Path
-sys.path.append(str(Path(__file__).parent))
-
 # Strategy modules
 import logging
 from freqtrade.constants import Config
@@ -54,7 +46,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.2.2"
+    STRATEGY_VERSION = "1.2.3"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -232,8 +224,8 @@ class BaseStrategy(IStrategy):
 
 
     def leverage(self, pair: str, current_time: datetime, current_rate: float,
-                 proposed_leverage: float, max_leverage: float, entry_tag: Optional[str], side: str,
-                 **kwargs) -> float:
+                 proposed_leverage: float, max_leverage: float, entry_tag: Optional[str],
+                 side: str, **kwargs) -> float:
         """
         Customize leverage for each new trade. This method is only called in futures mode.
 
@@ -247,11 +239,17 @@ class BaseStrategy(IStrategy):
         :return: A leverage amount, which is between 1.0 and max_leverage.
         """
 
+        leverage = 1.0
+
         pairkey = f"{pair}_{side}"
         if pairkey in self.leverage_configuration:
-            return self.leverage_configuration[pairkey]
-        else:
-            return 1.0
+            leverage = self.leverage_configuration[pairkey]
+        elif "default" in self.leverage_configuration:
+            leverage =  self.leverage_configuration["default"]
+
+        self.logger.info(f"Returning leverage '{leverage}' for pair {pair} and side {side}. Configuration = {self.leverage_configuration}")
+
+        return leverage
 
 
     def custom_stoploss(self, pair: str, trade: 'Trade', current_time: datetime, current_rate: float,
