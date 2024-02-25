@@ -46,7 +46,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.2.3"
+    STRATEGY_VERSION = "1.3.0"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -120,12 +120,14 @@ class BaseStrategy(IStrategy):
         # TODO: improve later on with custom exit with profit and leverage calculation for each pair
         leverage = min(self.leverage_configuration.values()) if len(self.leverage_configuration) > 0 else 1.0
 
-        self.logger.info(
-            f"Update minimal ROI keeping leverage of {leverage} into account."
-        )
-
         for k, v in self.minimal_roi.items():
             self.minimal_roi[k] = round(v * leverage, 4)
+
+        self.stoploss *= leverage
+
+        self.logger.info(
+            f"Updated minimal ROI keeping leverage of {leverage} into account."
+        )
 
         # Call to super
         super().__init__(config)
@@ -293,6 +295,6 @@ class BaseStrategy(IStrategy):
             self.custom_info[pair_key] = {}
 
             if self.logger:
-                self.logger.debug(
+                self.logger.info(
                     f"Created custom data storage for trade of pair {pair_key}."
                 )
