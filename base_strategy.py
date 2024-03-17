@@ -46,7 +46,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.3.0"
+    STRATEGY_VERSION = "1.4.0"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -298,3 +298,21 @@ class BaseStrategy(IStrategy):
                 self.logger.info(
                     f"Created custom data storage for trade of pair {pair_key}."
                 )
+
+
+    def get_round_digits(self, pair: str) -> int:
+        """
+        Get the number of digits to use for logging purposes based on the pair
+
+        :param pair: the pair
+        :return int: number of digits to use
+        """
+
+        numberofdigits = 4
+
+        base = pair.split("/")[1]
+
+        if base in ("BTC", "ETH"):
+            numberofdigits = 8
+
+        return numberofdigits
