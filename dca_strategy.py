@@ -37,7 +37,7 @@ class DCAStrategy(BaseStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.3.0"
+    STRATEGY_VERSION = "1.4.0"
 
     # Max number of safety orders (-1 means disabled)
     max_entry_position_adjustment = -1
@@ -70,6 +70,11 @@ class DCAStrategy(BaseStrategy):
     trailing_safety_order_configuration["default"][0]["start_percentage"] = 0.25
     trailing_safety_order_configuration["default"][0]["factor"] = 0.50
 
+    # Settings controlling when to send notification about the trailing safety orders
+    notify_trailing_start = True
+    notify_trailing_update = True
+    notify_trailing_reset = True
+
 
     def version(self) -> Optional[str]:
         """
@@ -89,6 +94,17 @@ class DCAStrategy(BaseStrategy):
         if "trading_direction" in config:
             if config["trading_direction"] in ("long", "short", "long_short"):
                 self.trading_direction = config["trading_direction"]
+
+        # Try to get the trailing notify options from the config and validate when present
+        if "notify_trailing_start" in config:
+            if isinstance(config["notify_trailing_start"], bool):
+                self.notify_trailing_start = config["notify_trailing_start"]
+        if "notify_trailing_update" in config:
+            if isinstance(config["notify_trailing_update"], bool):
+                self.notify_trailing_update = config["notify_trailing_update"]
+        if "notify_trailing_reset" in config:
+            if isinstance(config["notify_trailing_reset"], bool):
+                self.notify_trailing_reset = config["notify_trailing_reset"]
 
         # First make sure the contents of the (Trailing) Safety Order configuration is correct
         for pairvalue in self.safety_order_configuration.values():
@@ -164,8 +180,8 @@ class DCAStrategy(BaseStrategy):
 
         # Create custom data required for DCA
         opentrades = Trade.get_trades_proxy(is_open=True)
-        for trade in opentrades:
-            custompairkey = f"{trade.pair}_{trade.trade_direction}"
+        for opentrade in opentrades:
+            custompairkey = self.get_custom_pairkey(opentrade)
             self.initialize_custom_data(custompairkey)
 
 
@@ -218,6 +234,49 @@ class DCAStrategy(BaseStrategy):
         return True
 
 
+    def confirm_trade_exit(self, pair: str, trade: 'Trade', order_type: str, amount: float,
+                           rate: float, time_in_force: str, exit_reason: str,
+                           current_time: datetime, **kwargs) -> bool:
+        """
+        Called right before placing a regular exit order.
+        Timing for this function is critical, so avoid doing heavy computations or
+        network requests in this method.
+
+        For full documentation please go to https://www.freqtrade.io/en/latest/strategy-advanced/
+
+        When not implemented by a strategy, returns True (always confirming).
+
+        :param pair: Pair for trade that's about to be exited.
+        :param trade: trade object.
+        :param order_type: Order type (as configured in order_types). usually limit or market.
+        :param amount: Amount in base currency.
+        :param rate: Rate that's going to be used when using limit orders
+                     or current rate for market orders.
+        :param time_in_force: Time in force. Defaults to GTC (Good-til-cancelled).
+        :param exit_reason: Exit reason.
+            Can be any of ['roi', 'stop_loss', 'stoploss_on_exchange', 'trailing_stop_loss',
+                           'exit_signal', 'force_exit', 'emergency_exit']
+        :param current_time: datetime object, containing the current datetime
+        :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
+        :return bool: When True, then the exit-order is placed on the exchange.
+            False aborts the process
+        """
+
+        confirmed = super().confirm_trade_exit(pair, trade, order_type, amount,
+                                             rate, time_in_force, exit_reason,
+                                             current_time)
+
+        # Send notification about number of entries used to exit the trade
+        filled_entries = trade.select_filled_orders(trade.entry_side)
+        count_of_entries = len(filled_entries)
+
+        self.dp.send_msg(
+            f"{pair}: Exit after {count_of_entries} filled entry orders."
+        )
+
+        return confirmed
+
+
     def adjust_trade_position(self, trade: 'Trade', current_time: datetime,
                               current_rate: float, current_profit: float,
                               min_stake: Optional[float], max_stake: float,
@@ -251,13 +310,21 @@ class DCAStrategy(BaseStrategy):
                        Return None for no action.
         """
 
+        # Pair is locked, so return
+        if self.is_pair_locked(trade.pair):
+            return None
+
+        # Trade is in profit, so return
+        if current_profit >= 0.0:
+            return None
+
         # Return when no extra orders are allowed
         if self.max_entry_position_adjustment == -1:
             return None
 
         # Create pairkey, or use 'default' 
-        custompairkey = f"{trade.pair}_{trade.trade_direction}"
-        configpairkey = f"{trade.pair}_{trade.trade_direction}"
+        custompairkey = self.get_custom_pairkey(trade)
+        configpairkey = custompairkey
         if not configpairkey in self.safety_order_configuration:
             configpairkey = "default"
 
@@ -265,42 +332,73 @@ class DCAStrategy(BaseStrategy):
         count_of_entries = trade.nr_of_successful_entries
         count_of_safety_orders = count_of_entries - 1 # Subtract Base Order
         if count_of_safety_orders >= self.safety_order_configuration[configpairkey]["max_so"]:
-            #if self.logger:
-            #    self.logger.debug(
-            #        f"{trade.pair}: reached max number ({self.safety_order_configuration[pairkey]['max_so']}) of Safety Orders."
-            #    )
+            if self.logger:
+                self.logger.debug(
+                    f"{trade.pair}: reached max number ({self.safety_order_configuration[pairkey]['max_so']}) of Safety Orders."
+                )
             return None
 
-        # Return when the current (negative) profit hasn't reached the next Safety Order. Take the current leverage into account.
-        next_price_deviation = self.calculate_dca_deviation_total(count_of_entries, configpairkey, self.safety_order_configuration[configpairkey]["max_so"])
+        if len(self.custom_info[custompairkey]["open_safety_orders"]) > 0:
+            pricedeviation = self.custom_info[custompairkey]["open_safety_orders"][0]["current_deviation"]
+            totaldeviation = self.custom_info[custompairkey]["open_safety_orders"][0]["total_deviation"]
+            volume = self.custom_info[custompairkey]["open_safety_orders"][0]["volume"]
+
+            self.custom_info[custompairkey]["open_safety_orders"].pop(0)
+            ordersleft = len(self.custom_info[custompairkey]["open_safety_orders"])
+
+            self.dp.send_msg(
+                f"{trade.pair}: current profit {pricedeviation:.4f}% reached next SO {count_of_entries} "
+                f"at {totaldeviation:.4f}% "
+                f"and calculated volume of {volume} ({ordersleft} orders left)."
+            )
+
+            if self.logger:
+                self.logger.info(
+                    f"{trade.pair}: about to fill next Safety Order and {ordersleft} orders left."
+                )
+
+            return volume #, f"Safety Order {count_of_entries}"
+
+        # Calculate the next Safety Order, if not calculated before. Store the calculated value to save some CPU cycles
+        if self.custom_info[custompairkey]["next_safety_order_profit_percentage"] == 0.0:
+            self.custom_info[custompairkey]["next_safety_order_profit_percentage"] = self.calculate_dca_deviation_total(count_of_entries, configpairkey, self.safety_order_configuration[configpairkey]["max_so"])
+            if self.logger:
+                self.logger.info(
+                    f"{trade.pair}: calculated next safety order on {self.custom_info[custompairkey]['next_safety_order_profit_percentage']:.4f}%."
+                )
+
+        # Return when the current (negative) profit hasn't reached the next Safety Order. 
         current_entry_profit_percentage = (current_entry_profit / trade.leverage) * 100.0
-        if current_entry_profit_percentage > next_price_deviation:
+        next_safety_order_percentage = self.custom_info[custompairkey]["next_safety_order_profit_percentage"]
+        if current_entry_profit_percentage > next_safety_order_percentage:
             return None
 
-        tso_enabled, tso_start_percentage, tso_factor = self.get_trailing_config(current_entry_profit_percentage, next_price_deviation, configpairkey)
+        tso_enabled, tso_start_percentage, tso_factor = self.get_trailing_config(current_entry_profit_percentage, next_safety_order_percentage, configpairkey)
 
         if tso_enabled:
             # Return when profit is above Safety Order percentage keeping start_percentage into account (and reset data when required)
-            if current_entry_profit_percentage > (next_price_deviation - tso_start_percentage):
+            if current_entry_profit_percentage > (next_safety_order_percentage - tso_start_percentage):
                 if self.custom_info[custompairkey]["last_profit_percentage"] != 0.0:
                     self.custom_info[custompairkey]["last_profit_percentage"] = float(0.0)
                     self.custom_info[custompairkey]["add_safety_order_on_profit_percentage"] = float(0.0)
 
-                    self.dp.send_msg(
-                        f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% went above "
-                        f"{(next_price_deviation - tso_start_percentage):.4f}%; reset trailing."
-                    )
+                    if self.notify_trailing_reset:
+                        self.dp.send_msg(
+                            f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% went above "
+                            f"{(next_safety_order_percentage - tso_start_percentage):.4f}%; reset trailing."
+                        )
 
                 return None
 
             # Increase trailing when profit has increased (in a negative way)
             if current_entry_profit_percentage < self.custom_info[custompairkey]["last_profit_percentage"]:
-                new_threshold = next_price_deviation + ((current_entry_profit_percentage - next_price_deviation) * tso_factor)
+                new_threshold = next_safety_order_percentage + ((current_entry_profit_percentage - next_safety_order_percentage) * tso_factor)
 
-                self.dp.send_msg(
-                    f"{trade.pair}: profit from {self.custom_info[custompairkey]['last_profit_percentage']:.4f}% to {current_entry_profit_percentage:.4f}% ({tso_start_percentage}%). "
-                    f"Safety Order threshold from {self.custom_info[custompairkey]['add_safety_order_on_profit_percentage']:.4f}% to {new_threshold:.4f}% ({tso_factor})."
-                )
+                if ((self.custom_info[custompairkey]['last_profit_percentage'] == 0.0) & self.notify_trailing_start) | self.notify_trailing_update:
+                    self.dp.send_msg(
+                        f"{trade.pair}: profit from {self.custom_info[custompairkey]['last_profit_percentage']:.4f}% to {current_entry_profit_percentage:.4f}% ({tso_start_percentage}%). "
+                        f"Safety Order threshold from {self.custom_info[custompairkey]['add_safety_order_on_profit_percentage']:.4f}% to {new_threshold:.4f}% ({tso_factor})."
+                    )
 
                 self.custom_info[custompairkey]["last_profit_percentage"] = current_entry_profit_percentage
                 self.custom_info[custompairkey]["add_safety_order_on_profit_percentage"] = new_threshold
@@ -316,26 +414,40 @@ class DCAStrategy(BaseStrategy):
 
         # Oke, time to add a Safety Order!
         try:
-            # Calculate volume
-            volume = self.calculate_dca_volume(count_of_entries, configpairkey, self.safety_order_configuration[configpairkey]["max_so"])
+            # Calculate order(s) to be filled. Can be more than one order when the profit dropped big
+            orderdata = self.determine_required_safety_orders(count_of_safety_orders, current_entry_profit_percentage, configpairkey, self.safety_order_configuration[configpairkey]["max_so"])
 
-            if volume > 0.0:
-                self.dp.send_msg(
-                    f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached next SO {count_of_entries} "
-                    f"at {self.custom_info[custompairkey]['add_safety_order_on_profit_percentage']:.4f}% (trailing from {next_price_deviation:.4f}%) "
-                    f"and calculated volume of {volume} for order."
-                )
+            if len(orderdata) >= 1:
+                volume = orderdata[0]["volume"]
+                if tso_enabled:
+                    self.dp.send_msg(
+                        f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached next SO {count_of_entries} "
+                        f"at {self.custom_info[custompairkey]['add_safety_order_on_profit_percentage']:.4f}% (trailing from {next_safety_order_percentage:.4f}%) "
+                        f"and calculated volume of {volume} for order 1/{len(orderdata)}."
+                    )
+                else:
+                    self.dp.send_msg(
+                        f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached next SO {count_of_entries} "
+                        f"at {next_safety_order_percentage:.4f}% "
+                        f"and calculated volume of {volume} for order 1/{len(orderdata)}."
+                    )
 
-                # Reset trailing
+                # Reset data and trailing
                 self.custom_info[custompairkey]["last_profit_percentage"] = 0.0
+                self.custom_info[custompairkey]["next_safety_order_profit_percentage"] = 0.0
                 self.custom_info[custompairkey]["add_safety_order_on_profit_percentage"] = 0.0
 
+                # Store order data for subsequent next orders to be bought after the first one has been bought
+                if len(orderdata) > 1:
+                    orderdata.pop(0) # Remove first order, as that one is already returned from this function
+                    self.custom_info[custompairkey]["open_safety_orders"] = orderdata
+
                 # Return volume for entry order
-                return volume
+                return volume #, f"Safety Order {count_of_entries}"
             else:
                 if self.logger:
                     self.logger.error(
-                        f"{trade.pair}: calculated invalid volume of '{volume}' for SO {count_of_entries}!"
+                        f"{trade.pair}: calculated invalid orderdata based on {count_of_entries} of filled Safety Orders and current profit {current_entry_profit_percentage:.4f}%!"
                     )
         except Exception as exception:
             return None
@@ -471,10 +583,56 @@ class DCAStrategy(BaseStrategy):
             so_count = 1
             while (so_count <= safety_order):
                 total_deviation += self.calculate_dca_step_deviation(so_count, config_pair_key, max_safety_orders)
-
                 so_count += 1
 
         return total_deviation
+
+
+    def determine_required_safety_orders(self, current_safety_order, current_price_deviation, config_pair_key, max_safety_orders) -> float:
+        """
+        DCA implementation; calculate the total price deviation from the entry price including the
+        specified Safety Order.
+
+        This function checks if the provided safety order number is below the max number of 
+        allowed trades as specifed with the `max_entry_position_adjustment`.
+
+        :param safety_order: Safety order number.
+        :return float: Percentage,
+                       Return 0.0 for safety order above the `max_entry_position_adjustment`.
+        """
+
+        requiredorders = list()
+
+        if 0 <= current_safety_order <= (max_safety_orders - 1):
+            so_count = 1
+            step_deviation = 0.0
+            total_deviation = 0.0
+            while (so_count <= current_safety_order):
+                step_deviation = self.calculate_dca_step_deviation(so_count, config_pair_key, max_safety_orders)
+                total_deviation += step_deviation
+                so_count += 1
+
+            while (so_count <= max_safety_orders):
+                step_deviation = self.calculate_dca_step_deviation(so_count, config_pair_key, max_safety_orders)
+                total_deviation += step_deviation
+
+                if current_price_deviation > total_deviation:
+                    break
+
+                volume = self.calculate_dca_volume(so_count, config_pair_key, max_safety_orders)
+
+                order = {
+                    "order": so_count,
+                    "deviation": step_deviation,
+                    "current_deviation": current_price_deviation,
+                    "total_deviation": total_deviation,
+                    "volume": volume
+                }
+                requiredorders.append(order)
+
+                so_count += 1
+
+        return requiredorders
 
 
     def initialize_custom_data(self, custom_pair_key):
@@ -484,5 +642,15 @@ class DCAStrategy(BaseStrategy):
         super().create_custom_data(custom_pair_key)
 
         # Insert default data
-        self.custom_info[custom_pair_key]["last_profit_percentage"] = float(0.0)
-        self.custom_info[custom_pair_key]["add_safety_order_on_profit_percentage"] = float(0.0)
+        self.custom_info[custom_pair_key]["last_profit_percentage"] = float(0.0) # Keep track of profit percentage for every cycle/update
+        self.custom_info[custom_pair_key]["next_safety_order_profit_percentage"] = float(0.0) # Percentage on which the next SO is configured
+        self.custom_info[custom_pair_key]["add_safety_order_on_profit_percentage"] = float(0.0) # Percentage on which the next SO should be bought, based on trailing
+        self.custom_info[custom_pair_key]["open_safety_orders"] = list() # List of open Safety Orders to buy
+
+
+    def get_custom_pairkey(self, trade: 'Trade'):
+        """
+        Get the custom pairkey used for runtime storage of trade data
+        """
+
+        return f"{trade.pair}_{trade.trade_direction}"
