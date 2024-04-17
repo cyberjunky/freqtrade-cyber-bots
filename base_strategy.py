@@ -47,7 +47,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_BASE = "1.4.2"
+    STRATEGY_VERSION_BASE = "1.5.0"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -196,8 +196,8 @@ class BaseStrategy(IStrategy):
         dataframe.loc[:,'enter_long'] = 0
         dataframe.loc[:,'enter_short'] = 0
 
-        if 'enter_tag' not in dataframe.columns:
-            dataframe['enter_tag'] = pd.Series(dtype='object')
+        #if 'enter_tag' not in dataframe.columns:
+        #    dataframe['enter_tag'] = pd.Series(dtype='object')
 
         return dataframe
 
@@ -212,6 +212,9 @@ class BaseStrategy(IStrategy):
 
         dataframe.loc[:,'exit_long'] = 0
         dataframe.loc[:,'exit_short'] = 0
+
+        #if 'exit_tag' not in dataframe.columns:
+        #    dataframe['exit_tag'] = pd.Series(dtype='object')
 
         return dataframe
 
@@ -316,7 +319,15 @@ class BaseStrategy(IStrategy):
             # Create empty entry for this trade
             self.custom_info[pair_key] = {}
 
-            self.log(f"Created custom data storage for trade of pair {pair_key}.")
+            self.log(f"Created custom data storage for pair {pair_key}.")
+
+
+    def get_custom_pairkey(self, trade: 'Trade') -> str:
+        """
+        Get the custom pairkey used for runtime storage of trade data
+        """
+
+        return f"{trade.pair}_{trade.trade_direction}"
 
 
     def get_round_digits(self, pair: str) -> int:
@@ -337,14 +348,6 @@ class BaseStrategy(IStrategy):
         return numberofdigits
 
 
-    def get_custom_pairkey(self, trade: 'Trade'):
-        """
-        Get the custom pairkey used for runtime storage of trade data
-        """
-
-        return f"{trade.pair}_{trade.trade_direction}"
-
-
     def log(self, message, level="INFO", notify=False):
         """
         Function for logging data on a certain level Can also send
@@ -359,8 +362,10 @@ class BaseStrategy(IStrategy):
                     self.logger.debug(message)
                 case "WARNING":
                     self.logger.warning(message)
+                    notify = True # Force notification
                 case "ERROR":
                     self.logger.error(message)
+                    notify = True # Force notification
 
         if notify:
             self.dp.send_msg(message)
