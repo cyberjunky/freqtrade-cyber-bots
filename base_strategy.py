@@ -20,6 +20,7 @@ from technical import qtpylib
 # Strategy modules
 import logging
 from freqtrade.constants import Config
+from freqtrade.persistence import Trade
 
 class BaseStrategy(IStrategy):
     """
@@ -46,7 +47,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION = "1.4.0"
+    STRATEGY_VERSION_BASE = "1.4.2"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -96,7 +97,7 @@ class BaseStrategy(IStrategy):
         Returns version of the strategy.
         """
 
-        return self.STRATEGY_VERSION
+        return self.STRATEGY_VERSION_BASE
 
 
     def __init__(self, config: Config) -> None:
@@ -125,12 +126,11 @@ class BaseStrategy(IStrategy):
 
         self.stoploss *= leverage
 
-        self.logger.info(
-            f"Updated minimal ROI keeping leverage of {leverage} into account."
-        )
+        self.log(f"Updated minimal ROI keeping leverage of {leverage} into account.")
 
         # Call to super
         super().__init__(config)
+        self.log(f"Base Strategy: '{BaseStrategy.version(self)}'")
 
 
     def bot_start(self, **kwargs) -> None:
@@ -142,8 +142,32 @@ class BaseStrategy(IStrategy):
         # Call to super first
         super().bot_start()
 
-        self.logger.info(f"Running with stoploss configuration: '{self.stoploss_configuration}'")
-        self.logger.info(f"Running with leverage configuration: '{self.leverage_configuration}'")
+        self.log(f"Running with stoploss configuration: '{self.stoploss_configuration}'")
+        self.log(f"Running with leverage configuration: '{self.leverage_configuration}'")
+
+
+    def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
+        """
+        Called at the start of the bot iteration (one loop).
+        Might be used to perform pair-independent tasks
+        (e.g. gather some remote resource for comparison)
+        :param current_time: datetime object, containing the current datetime
+        :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
+        """
+
+        keyslist = list(self.custom_info.keys())
+
+        opentrades = Trade.get_trades_proxy(is_open=True)
+        for opentrade in opentrades:
+            custompairkey = self.get_custom_pairkey(opentrade)
+            keyslist.remove(custompairkey)
+
+        for key in keyslist:
+            # Remove entry and data for this closed trade
+            self.log(f"Removing custom data storage for '{key}'")
+            del self.custom_info[key]
+
+        return super().bot_loop_start(current_time)
 
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -171,6 +195,9 @@ class BaseStrategy(IStrategy):
 
         dataframe.loc[:,'enter_long'] = 0
         dataframe.loc[:,'enter_short'] = 0
+
+        if 'enter_tag' not in dataframe.columns:
+            dataframe['enter_tag'] = pd.Series(dtype='object')
 
         return dataframe
 
@@ -217,12 +244,7 @@ class BaseStrategy(IStrategy):
             False aborts the process
         """
 
-        pairkey = f"{pair}_{trade.trade_direction}"
-        if pairkey in self.custom_info:
-            # Remove entry and data for this trade
-            del self.custom_info[pairkey]
-
-        return True
+        return super().confirm_trade_exit(pair, trade, order_type, amount, rate, time_in_force, exit_reason, current_time)
 
 
     def leverage(self, pair: str, current_time: datetime, current_rate: float,
@@ -249,7 +271,7 @@ class BaseStrategy(IStrategy):
         elif "default" in self.leverage_configuration:
             leverage =  self.leverage_configuration["default"]
 
-        self.logger.info(f"Returning leverage '{leverage}' for pair {pair} and side {side}. Configuration = {self.leverage_configuration}")
+        self.log(f"Returning leverage '{leverage}' for pair {pair} and side {side}. Configuration = {self.leverage_configuration}")
 
         return leverage
 
@@ -294,10 +316,7 @@ class BaseStrategy(IStrategy):
             # Create empty entry for this trade
             self.custom_info[pair_key] = {}
 
-            if self.logger:
-                self.logger.info(
-                    f"Created custom data storage for trade of pair {pair_key}."
-                )
+            self.log(f"Created custom data storage for trade of pair {pair_key}.")
 
 
     def get_round_digits(self, pair: str) -> int:
@@ -316,3 +335,32 @@ class BaseStrategy(IStrategy):
             numberofdigits = 8
 
         return numberofdigits
+
+
+    def get_custom_pairkey(self, trade: 'Trade'):
+        """
+        Get the custom pairkey used for runtime storage of trade data
+        """
+
+        return f"{trade.pair}_{trade.trade_direction}"
+
+
+    def log(self, message, level="INFO", notify=False):
+        """
+        Function for logging data on a certain level Can also send
+        a notification.
+        """
+
+        if self.logger:
+            match level:
+                case "INFO":
+                    self.logger.info(message)
+                case "DEBUG":
+                    self.logger.debug(message)
+                case "WARNING":
+                    self.logger.warning(message)
+                case "ERROR":
+                    self.logger.error(message)
+
+        if notify:
+            self.dp.send_msg(message)
