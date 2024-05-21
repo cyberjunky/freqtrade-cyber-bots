@@ -2,17 +2,17 @@
 # flake8: noqa: F401
 # isort: skip_file
 # --- Do not remove these libs ---
-from math import fabs
-import numpy as np
-import pandas as pd
-from pandas import DataFrame
-from datetime import datetime
-from typing import Optional, Union
+#from math import fabs
+#import numpy as np
+#import pandas as pd
+#from pandas import DataFrame
+from datetime import datetime, timedelta
+from typing import Optional
 
 # --------------------------------
 # Add your lib to import here
 from freqtrade.constants import Config
-from freqtrade.persistence import Trade
+from freqtrade.persistence import Order, Trade
 
 from .base_strategy import BaseStrategy
 class DCAStrategy(BaseStrategy):
@@ -37,7 +37,7 @@ class DCAStrategy(BaseStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_DCA = "1.6.0"
+    STRATEGY_VERSION_DCA = "1.7.0"
 
     # Max number of safety orders (-1 means disabled)
     max_entry_position_adjustment = -1
@@ -50,6 +50,9 @@ class DCAStrategy(BaseStrategy):
 
     # Trading mode for this strategy (long / short / long_short)
     trading_direction = "long"
+
+    # BaseOrder and SafetyOrder relation
+    trade_bo_so_ratio = "1:1"
 
     # Safety Order configuration. 
     # The 'default' can be used when there is no specific entry for the pair and direction in the list
@@ -91,6 +94,9 @@ class DCAStrategy(BaseStrategy):
         all attributes,
         """
 
+        # Call to super
+        super().__init__(config)
+
         # Try to get the trading direction from the config and validate when present
         if "trading_direction" in config:
             if config["trading_direction"] in ("long", "short", "long_short"):
@@ -107,7 +113,13 @@ class DCAStrategy(BaseStrategy):
             if isinstance(config["notify_trailing_reset"], bool):
                 self.notify_trailing_reset = config["notify_trailing_reset"]
 
-        # First make sure the contents of the (Trailing) Safety Order configuration is correct
+        bo_so = 1.0
+        if "bo:so" in config:
+            if isinstance(config["bo:so"], str):
+                self.trade_bo_so_ratio = config["bo:so"]
+                bo_so = self.get_boso_factor()
+
+        # Make sure the contents of the Safety Order configuration is correct
         for pairvalue in self.safety_order_configuration.values():
             for k, v in pairvalue.items():
                 if k in ("max_so"):
@@ -115,6 +127,18 @@ class DCAStrategy(BaseStrategy):
                 else:
                     pairvalue[k] = float(v)
 
+                if k in ("initial_so_amount"):
+                    # This could be 'unlimited' when the stake_amount from the config is used
+                    if not isinstance(pairvalue[k], str):
+                        old_value = pairvalue[k]
+                        pairvalue[k] *= bo_so
+
+                        self.log(
+                            f"Updated initial so amount from {old_value} to {pairvalue[k]} "
+                            f"based on bo amount {config['stake_amount']} and BO:SO {self.trade_bo_so_ratio}"
+                        )
+
+        # Make sure the contents of the Trailing Safety Order configuration is correct
         for pairvalue in self.trailing_safety_order_configuration.values():
             for l in pairvalue.values():
                 for k, v in l.items():
@@ -134,13 +158,9 @@ class DCAStrategy(BaseStrategy):
             if self.max_entry_position_adjustment < max_so:
                 self.max_entry_position_adjustment = max_so
 
-            # Disabled by default, so enable when there are additional Safety Orders configured
-            if self.max_entry_position_adjustment > 0:
-                self.position_adjustment_enable = True
-
-        # Call to super
-        super().__init__(config)
-        self.log(f"DCA Strategy: '{DCAStrategy.version(self)}'")
+        # Disabled by default, so enable when there are additional Safety Orders configured
+        if self.max_entry_position_adjustment > 0:
+            self.position_adjustment_enable = True
 
 
     def bot_start(self, **kwargs) -> None:
@@ -151,8 +171,10 @@ class DCAStrategy(BaseStrategy):
     
         # Call to super first
         super().bot_start()
+        self.log(f"Version - DCA Strategy: '{DCAStrategy.version(self)}'")
 
         self.log(f"Running with trading direction(s): '{self.trading_direction}'")
+        self.log(f"Running with bo:so: '{self.trade_bo_so_ratio}'")
 
         # Display Safety Order configuration...
         for pairkey in self.safety_order_configuration:
@@ -233,53 +255,74 @@ class DCAStrategy(BaseStrategy):
                 )
                 return False
 
+        # Check min stake amount required for the exchange, and keeping the bo:so into account
+        pairdata = self.dp.market(pair)
+
+        min_entry_amount = pairdata['limits']['amount']['min']
+        min_entry_cost = pairdata['limits']['cost']['min']
+
+        bo_so_factor = self.get_boso_factor()
+        so_amount = amount * bo_so_factor
+        so_cost = (amount * rate) * bo_so_factor
+
+        if so_amount < min_entry_amount or so_cost < min_entry_cost:
+            self.log(
+                f"{pair}: trading limit for a SO cannot be statisfied based on {self.trade_bo_so_ratio} ratio. "
+                f"Safety Order amount {so_amount} (based on BO amount {amount}) is lower than {min_entry_amount} and/or "
+                f"cost {so_cost} is lower than {min_entry_cost}. "
+                f"Not starting this trade.",
+                "WARNING"
+            )
+            self.lock_pair(pair, until=current_time + timedelta(minutes=1), reason="Min order limits could not be statisfied")
+            return False
+
         self.initialize_custom_data(pairkey)
 
         return True
 
 
-    def confirm_trade_exit(self, pair: str, trade: 'Trade', order_type: str, amount: float,
-                           rate: float, time_in_force: str, exit_reason: str,
-                           current_time: datetime, **kwargs) -> bool:
+    def order_filled(self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs) -> None:
         """
-        Called right before placing a regular exit order.
-        Timing for this function is critical, so avoid doing heavy computations or
-        network requests in this method.
-
-        For full documentation please go to https://www.freqtrade.io/en/latest/strategy-advanced/
-
-        When not implemented by a strategy, returns True (always confirming).
-
-        :param pair: Pair for trade that's about to be exited.
+        Called right after an order fills. 
+        Will be called for all order types (entry, exit, stoploss, position adjustment).
+        :param pair: Pair for trade
         :param trade: trade object.
-        :param order_type: Order type (as configured in order_types). usually limit or market.
-        :param amount: Amount in base currency.
-        :param rate: Rate that's going to be used when using limit orders
-                     or current rate for market orders.
-        :param time_in_force: Time in force. Defaults to GTC (Good-til-cancelled).
-        :param exit_reason: Exit reason.
-            Can be any of ['roi', 'stop_loss', 'stoploss_on_exchange', 'trailing_stop_loss',
-                           'exit_signal', 'force_exit', 'emergency_exit']
+        :param order: Order object.
         :param current_time: datetime object, containing the current datetime
         :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
-        :return bool: When True, then the exit-order is placed on the exchange.
-            False aborts the process
         """
 
-        confirmed = super().confirm_trade_exit(pair, trade, order_type, amount,
-                                             rate, time_in_force, exit_reason,
-                                             current_time)
+        super().order_filled(pair, trade, order, current_time)
 
-        # Send notification about number of entries used to exit the trade
-        filled_entries = trade.select_filled_orders(trade.entry_side)
-        count_of_entries = len(filled_entries)
+        if order.ft_order_side == trade.entry_side:
+            custompairkey = self.get_custom_pairkey(trade)
+            openorders = len(self.custom_info[custompairkey]["open_safety_orders"])
+            if openorders > 0:
+                # Check if the first order from the list has been bought. Remove the bought order and check if there are other
+                # order(s) that should be bought. Keep in mind that an order can timeout on the exchange, in which case this function
+                # is called again and the same volume must be returned (to place the order again)
+                count_of_entries = trade.nr_of_successful_entries
+                count_of_safety_orders = count_of_entries - 1 # Subtract Base Order
+                if self.custom_info[custompairkey]["open_safety_orders"][0]["order"] == count_of_safety_orders:
+                    self.custom_info[custompairkey]["open_safety_orders"].pop(0)
 
-        self.log(
-            f"{pair}: Exit after {count_of_entries} filled entry orders.",
-            notify=True
-        )
+                    # Update number of open orders and send notification
+                    openorders = len(self.custom_info[custompairkey]["open_safety_orders"])
+                    self.log(
+                        f"{trade.pair}: Safety Order {count_of_safety_orders} has been bought. "
+                        f"There are {openorders} orders left.",
+                        notify=True
+                    )
+        else:
+            # Send notification about number of entries used to exit the trade
+            filled_entries = trade.select_filled_orders(trade.entry_side)
+            count_of_entries = len(filled_entries)
 
-        return confirmed
+            self.log(
+                f"{pair}: Exit after {count_of_entries} filled entry orders."
+            )
+
+        return None
 
 
     def adjust_trade_position(self, trade: 'Trade', current_time: datetime,
@@ -315,11 +358,11 @@ class DCAStrategy(BaseStrategy):
                        Return None for no action.
         """
 
-        # Pair is locked, so return
+        # Return when pair is locked
         if self.is_pair_locked(trade.pair):
             return None
 
-        # Trade is in profit, so return
+        # Return when Trade is in profit
         if current_profit >= 0.0:
             return None
 
@@ -328,10 +371,7 @@ class DCAStrategy(BaseStrategy):
             return None
 
         # Create pairkey, or use 'default' 
-        custompairkey = self.get_custom_pairkey(trade)
-        configpairkey = custompairkey
-        if not configpairkey in self.safety_order_configuration:
-            configpairkey = "default"
+        custompairkey, configpairkey = self.get_pairkeys(trade)
 
         # Return when all Safety Orders are executed
         count_of_entries = trade.nr_of_successful_entries
@@ -345,35 +385,17 @@ class DCAStrategy(BaseStrategy):
 
         openorders = len(self.custom_info[custompairkey]["open_safety_orders"])
         if openorders > 0:
-            # Check if the first order from the list has been bought. Remove the bought order and check if there are other
-            # order(s) that should be bought. Keep in mind that an order can timeout on the exchange, in which case this function
-            # is called again and the same volume must be returned (to place the order again)
-            # TODO: add safety check for price/deviation, in case the price has changed. Orders could be bought too low or high
-            if self.custom_info[custompairkey]["open_safety_orders"][0]["order"] == count_of_safety_orders:
-                # TODO: move this part to order_filled callback (introduced in 2024.1)
-                self.custom_info[custompairkey]["open_safety_orders"].pop(0)
+            pricedeviation = self.custom_info[custompairkey]["open_safety_orders"][0]["current_deviation"]
+            totaldeviation = self.custom_info[custompairkey]["open_safety_orders"][0]["total_deviation"]
+            volume = self.custom_info[custompairkey]["open_safety_orders"][0]["volume"]
 
-                # Update number of open orders and send notification
-                openorders = len(self.custom_info[custompairkey]["open_safety_orders"])
-                self.log(
-                    f"{trade.pair}: Safety Order {count_of_safety_orders} has been bought. "
-                    f"There are {openorders} orders left.",
-                    notify=True
-                )
+            self.log(
+                f"{trade.pair}: current profit {pricedeviation:.4f}% reached next SO {count_of_entries} at {totaldeviation:.4f}% "
+                f"and calculated volume of {volume}.",
+                notify=True
+            )
 
-            # Check if there are any orders left, and return the first one
-            if openorders > 0:
-                pricedeviation = self.custom_info[custompairkey]["open_safety_orders"][0]["current_deviation"]
-                totaldeviation = self.custom_info[custompairkey]["open_safety_orders"][0]["total_deviation"]
-                volume = self.custom_info[custompairkey]["open_safety_orders"][0]["volume"]
-
-                self.log(
-                    f"{trade.pair}: current profit {pricedeviation:.4f}% reached next SO {count_of_entries} at {totaldeviation:.4f}% "
-                    f"and calculated volume of {volume}.",
-                    notify=True
-                )
-
-                return volume, f"Safety Order {count_of_entries}"
+            return volume, f"Safety Order {count_of_entries}"
 
         # Calculate the next Safety Order, if not calculated before. Store the calculated value to save some CPU cycles
         if self.custom_info[custompairkey]["next_safety_order_profit_percentage"] == 0.0:
@@ -429,45 +451,46 @@ class DCAStrategy(BaseStrategy):
                 return None
 
         # Oke, time to add a Safety Order!
-        try:
-            # Calculate order(s) to be filled. Can be more than one order when there's been a huge drop
-            orderdata = self.determine_required_safety_orders(count_of_safety_orders, current_entry_profit_percentage, configpairkey, self.safety_order_configuration[configpairkey]["max_so"])
+        # Calculate order(s) to be filled. Can be more than one order when there's been a huge drop
+        orderdata = self.determine_required_safety_orders(count_of_safety_orders, current_entry_profit_percentage, configpairkey, self.safety_order_configuration[configpairkey]["max_so"])
 
-            volume = orderdata[0]["volume"]
-            if tso_enabled:
-                self.log(
-                    f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached next SO {count_of_entries} "
-                    f"at {self.custom_info[custompairkey]['add_safety_order_on_profit_percentage']:.4f}% (trailing from {next_safety_order_percentage:.4f}%) "
-                    f"and calculated volume of {volume} for order 1/{len(orderdata)}.",
-                    notify=True
-                )
-            else:
-                self.log(
-                    f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached next SO {count_of_entries} "
-                    f"at {next_safety_order_percentage:.4f}% "
-                    f"and calculated volume of {volume} for order 1/{len(orderdata)}.",
-                    notify=True
-                )
+        volume = orderdata[0]["volume"]
+        if tso_enabled:
+            self.log(
+                f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached next SO {count_of_entries} "
+                f"at {self.custom_info[custompairkey]['add_safety_order_on_profit_percentage']:.4f}% (trailing from {next_safety_order_percentage:.4f}%) "
+                f"and calculated volume of {volume} for order 1/{len(orderdata)}.",
+                notify=True
+            )
+        else:
+            self.log(
+                f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached next SO {count_of_entries} "
+                f"at {next_safety_order_percentage:.4f}% "
+                f"and calculated volume of {volume} for order 1/{len(orderdata)}.",
+                notify=True
+            )
 
-            # Reset data and trailing
-            self.custom_info[custompairkey]["last_profit_percentage"] = 0.0
-            self.custom_info[custompairkey]["next_safety_order_profit_percentage"] = 0.0
-            self.custom_info[custompairkey]["add_safety_order_on_profit_percentage"] = 0.0
+        # Reset data and trailing
+        self.custom_info[custompairkey]["last_profit_percentage"] = 0.0
+        self.custom_info[custompairkey]["next_safety_order_profit_percentage"] = 0.0
+        self.custom_info[custompairkey]["add_safety_order_on_profit_percentage"] = 0.0
 
-            # Store order data. Keep in mind orders can run into a timeout, and need to be placed again
-            self.custom_info[custompairkey]["open_safety_orders"] = orderdata
+        # Store order data. Keep in mind orders can run into a timeout, and need to be placed again
+        self.custom_info[custompairkey]["open_safety_orders"] = orderdata
 
-            # Return volume for entry order
-            return volume, f"Safety Order {count_of_entries}"
-        except Exception as exception:
-            return None
-
-        return None
+        # Return volume for entry order
+        return volume, f"Safety Order {count_of_entries}"
 
 
-    def get_trailing_config(self, profit_percentage, safety_order_percentage, config_pair_key) -> dict:
+    def get_trailing_config(self, profit_percentage, safety_order_percentage, config_pair_key) -> tuple[bool, float, float]:
         """
         Get the trailing values for the current config based on the pair and profit
+
+        :param profit_percentage: Current profit percentage.
+        :param safety_order_percentage: Key to use for looking up data in the configuration.
+        :param config_pair_key: Key to use for looking up data in the configuration.
+        :return tuple[bool, float, float]: If trailing is enabled, the percentage trailing should start on 
+                                            and the factor to increase the lacking threshold with
         """
 
         use_trailing = False
@@ -510,6 +533,8 @@ class DCAStrategy(BaseStrategy):
         allowed trades as specifed with the `max_entry_position_adjustment`.
 
         :param safety_order: Safety order number.
+        :param config_pair_key: Key to use for looking up data in the configuration.
+        :param max_safety_orders: Maximum number of Safety orders.
         :return float: Volume in stake currency,
                        Return 0.0 for safety order above the `max_entry_position_adjustment`.
         """
@@ -534,6 +559,8 @@ class DCAStrategy(BaseStrategy):
         allowed trades as specifed with the `max_entry_position_adjustment`.
 
         :param safety_order: Safety order number.
+        :param config_pair_key: Key to use for looking up data in the configuration.
+        :param max_safety_orders: Maximum number of Safety orders.
         :return float: Totale volume in stake curreny,
                        Return 0.0 for safety order above the `max_entry_position_adjustment`.
         """
@@ -559,6 +586,8 @@ class DCAStrategy(BaseStrategy):
         allowed trades as specifed with the `max_entry_position_adjustment`.
 
         :param safety_order: Safety order number.
+        :param config_pair_key: Key to use for looking up data in the configuration.
+        :param max_safety_orders: Maximum number of Safety orders.
         :return float: Percentage,
                        Return 0.0 for safety order above the `max_entry_position_adjustment`.
         """
@@ -583,6 +612,8 @@ class DCAStrategy(BaseStrategy):
         allowed trades as specifed with the `max_entry_position_adjustment`.
 
         :param safety_order: Safety order number.
+        :param config_pair_key: Key to use for looking up data in the configuration.
+        :param max_safety_orders: Maximum number of Safety orders.
         :return float: Percentage,
                        Return 0.0 for safety order above the `max_entry_position_adjustment`.
         """
@@ -606,7 +637,10 @@ class DCAStrategy(BaseStrategy):
         This function checks if the provided safety order number is below the max number of 
         allowed trades as specifed with the `max_entry_position_adjustment`.
 
-        :param safety_order: Safety order number.
+        :param current_safety_order: Current Safety order number.
+        :param current_price_deviation: Current price deviation, calculated from entry.
+        :param config_pair_key: Key to use for looking up data in the configuration.
+        :param max_safety_orders: Maximum number of Safety orders.
         :return float: Percentage,
                        Return 0.0 for safety order above the `max_entry_position_adjustment`.
         """
@@ -650,6 +684,9 @@ class DCAStrategy(BaseStrategy):
 
     def initialize_custom_data(self, custom_pair_key):
         """
+        Initialize the custom data with the required DCA fields.
+
+        :param custom_pair_key: The key to create the data for.
         """
 
         super().create_custom_data(custom_pair_key)
@@ -659,3 +696,29 @@ class DCAStrategy(BaseStrategy):
         self.custom_info[custom_pair_key]["next_safety_order_profit_percentage"] = float(0.0) # Percentage on which the next SO is configured
         self.custom_info[custom_pair_key]["add_safety_order_on_profit_percentage"] = float(0.0) # Percentage on which the next SO should be bought, based on trailing
         self.custom_info[custom_pair_key]["open_safety_orders"] = list() # List of open Safety Orders to buy
+
+
+    def get_pairkeys(self, trade: 'Trade') -> tuple[str, str]:
+        """
+        Get the custom pairkey used for runtime storage of trade data.
+
+        :param trade: Trade object of the trade for which the pairkeys should be fetched
+        :return tuple[str, str]: key for custom data storage, and key for configuration data
+        """
+
+        custompairkey = super().get_custom_pairkey(trade)
+        configpairkey = custompairkey
+        if not configpairkey in self.safety_order_configuration:
+            configpairkey = "default"
+
+        return custompairkey, configpairkey
+
+
+    def get_boso_factor(self) -> float:
+        """
+        Get the bo:so factor to take into account for orders
+        :return float: The bo:so factor
+        """
+
+        bo, so = self.trade_bo_so_ratio.split(":")
+        return float(so) / float(bo)
