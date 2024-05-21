@@ -2,25 +2,20 @@
 # flake8: noqa: F401
 # isort: skip_file
 # --- Do not remove these libs ---
-import numpy as np
-import pandas as pd
+#import numpy as np
+#import pandas as pd
 from pandas import DataFrame
 from datetime import datetime
-from typing import Optional, Union
+from typing import Optional
 
 from freqtrade.strategy import (BooleanParameter, CategoricalParameter, DecimalParameter,
-                                IntParameter, IStrategy, merge_informative_pair)
+                                IntParameter, IStrategy)
 
 # --------------------------------
 # Add your lib to import here
-import talib.abstract as ta
-import pandas_ta as pta
-from technical import qtpylib
-
-# Strategy modules
 import logging
 from freqtrade.constants import Config
-from freqtrade.persistence import Trade
+from freqtrade.persistence import Order, PairLocks, Trade
 
 class BaseStrategy(IStrategy):
     """
@@ -47,7 +42,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_BASE = "1.5.0"
+    STRATEGY_VERSION_BASE = "1.6.0"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -66,6 +61,9 @@ class BaseStrategy(IStrategy):
     # This attribute will be overridden if the config file contains "stoploss".
     # Set to -99% to actually disable the stoploss
     stoploss = -0.99
+
+    # Minimum profit used for checking exit of trades
+    min_profit = 0.0025 # 0.25%
 
     # Stoploss configuration
     use_custom_stoploss = True
@@ -106,6 +104,9 @@ class BaseStrategy(IStrategy):
         all attributes,
         """
 
+        # Call to super
+        super().__init__(config)
+
         # Initialize logger
         self.logger = logging.getLogger("freqtrade.strategy")
 
@@ -126,12 +127,6 @@ class BaseStrategy(IStrategy):
 
         self.stoploss *= leverage
 
-        self.log(f"Updated minimal ROI keeping leverage of {leverage} into account.")
-
-        # Call to super
-        super().__init__(config)
-        self.log(f"Base Strategy: '{BaseStrategy.version(self)}'")
-
 
     def bot_start(self, **kwargs) -> None:
         """
@@ -139,8 +134,12 @@ class BaseStrategy(IStrategy):
         :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
         """
     
+        # Setup removal of autolocaks
+        self.custom_info['remove-autolock'] = []
+
         # Call to super first
         super().bot_start()
+        self.log(f"Version - Base Strategy: '{BaseStrategy.version(self)}'")
 
         self.log(f"Running with stoploss configuration: '{self.stoploss_configuration}'")
         self.log(f"Running with leverage configuration: '{self.leverage_configuration}'")
@@ -155,17 +154,21 @@ class BaseStrategy(IStrategy):
         :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
         """
 
-        keyslist = list(self.custom_info.keys())
+        # Check if there are pairs set for which the Auto lock should be reoved
+        if len(self.custom_info['remove-autolock']) > 0:
+            self.unlock_reason("Auto lock")
 
-        opentrades = Trade.get_trades_proxy(is_open=True)
-        for opentrade in opentrades:
-            custompairkey = self.get_custom_pairkey(opentrade)
-            keyslist.remove(custompairkey)
+            # Sanity check to alert when removing the lock failed
+            for pair in self.custom_info['remove-autolock']:
+                lock = self.is_locked_until(pair)
+                if lock:
+                    self.log(
+                        f"{pair} has still an active lock until {lock}, while it should have been removed!",
+                        level="ERROR"
+                    )
 
-        for key in keyslist:
-            # Remove entry and data for this closed trade
-            self.log(f"Removing custom data storage for '{key}'")
-            del self.custom_info[key]
+            # Clear the list
+            self.custom_info['remove-autolock'].clear()
 
         return super().bot_loop_start(current_time)
 
@@ -196,9 +199,6 @@ class BaseStrategy(IStrategy):
         dataframe.loc[:,'enter_long'] = 0
         dataframe.loc[:,'enter_short'] = 0
 
-        #if 'enter_tag' not in dataframe.columns:
-        #    dataframe['enter_tag'] = pd.Series(dtype='object')
-
         return dataframe
 
 
@@ -212,9 +212,6 @@ class BaseStrategy(IStrategy):
 
         dataframe.loc[:,'exit_long'] = 0
         dataframe.loc[:,'exit_short'] = 0
-
-        #if 'exit_tag' not in dataframe.columns:
-        #    dataframe['exit_tag'] = pd.Series(dtype='object')
 
         return dataframe
 
@@ -247,7 +244,54 @@ class BaseStrategy(IStrategy):
             False aborts the process
         """
 
-        return super().confirm_trade_exit(pair, trade, order_type, amount, rate, time_in_force, exit_reason, current_time)
+        confirmed = super().confirm_trade_exit(pair, trade, order_type, amount,
+                                             rate, time_in_force, exit_reason,
+                                             current_time)
+
+        # Calculate profit and reject if lower than minimum profit.
+        # Allow force_exit and emergency_exit to bypass this check.
+        if exit_reason in ('roi', 'stop_loss', 'stoploss_on_exchange', 'trailing_stop_loss', 'exit_signal'):
+            current_profit = trade.calc_profit_ratio(rate)
+            if current_profit <= self.min_profit:
+                confirmed = False
+
+                self.log(
+                    f"{pair}: Reject exit ('{exit_reason}') on rate {rate} as the profit is {current_profit}.",
+                    "WARNING"
+                )
+
+                # Reset trailing if that's the reason for the exit
+                # TODO: figure out why this is not working!
+                if exit_reason == 'trailing_stop_loss':
+                    trade.adjust_stop_loss(current_price=rate, stoploss=-0.99, initial=True, allow_refresh=True)
+
+        return confirmed
+
+
+    def order_filled(self, pair: str, trade: Trade, order: Order, current_time: datetime, **kwargs) -> None:
+        """
+        Called right after an order fills. 
+        Will be called for all order types (entry, exit, stoploss, position adjustment).
+        :param pair: Pair for trade
+        :param trade: trade object.
+        :param order: Order object.
+        :param current_time: datetime object, containing the current datetime
+        :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
+        """
+
+        super().order_filled(pair, trade, order, current_time)
+
+        # Remove custom data when the 'sell' order has filled and the trade is closed
+        # Checking if the trade is closed, should take partially sells into account, as
+        # the trade will only be closed when the total amount has been sold
+        # TODO: monitor what will happen with partially filled 'sell' orders
+        if order.ft_order_side == trade.exit_side and not trade.is_open:
+            custompairkey = self.get_custom_pairkey(trade)
+            del self.custom_info[custompairkey]
+
+            self.log(f"Removed custom data storage for '{custompairkey}'")
+
+        return None
 
 
     def leverage(self, pair: str, current_time: datetime, current_rate: float,
@@ -313,6 +357,8 @@ class BaseStrategy(IStrategy):
     def create_custom_data(self, pair_key):
         """
         Create the custom data contact for storage during the runtime of this bot.
+
+        :param pair_key: The key to create the data for.
         """
 
         if not pair_key in self.custom_info:
@@ -325,6 +371,9 @@ class BaseStrategy(IStrategy):
     def get_custom_pairkey(self, trade: 'Trade') -> str:
         """
         Get the custom pairkey used for runtime storage of trade data
+
+        :param trade: Trade object to fetch the pairkey for
+        :return str: The composed pairkey
         """
 
         return f"{trade.pair}_{trade.trade_direction}"
@@ -348,10 +397,14 @@ class BaseStrategy(IStrategy):
         return numberofdigits
 
 
-    def log(self, message, level="INFO", notify=False):
+    def log(self, message: str, level="INFO", notify=False):
         """
         Function for logging data on a certain level Can also send
-        a notification.
+        a notification. For WARNING and ERROR the nofication is always send.
+
+        :param message: Message to log and optionally send in a notification
+        :param level: The level of the message
+        :param notify: Indication if a notification should be send
         """
 
         if self.logger:
@@ -369,3 +422,62 @@ class BaseStrategy(IStrategy):
 
         if notify:
             self.dp.send_msg(message)
+
+
+    def log_dataframe(self, df: DataFrame, msg="", number_of_rows=5):
+        """
+        Log a number of rows of the dataframe to the logger.
+
+        :param df: Dataframe
+        :param msg: Option message
+        :param number_of_rows: The number of rows to log
+        """
+        
+        self.log(
+            f"{msg}: {df.tail(number_of_rows)}"
+        )
+
+
+    def store_dataframe(self, df: DataFrame, path: str):
+        """
+        Store dataframe to disk on the specified location.
+
+        :param df: Dataframe to be stored
+        :param path: Location to store the dataframe
+        """
+
+        df.to_csv(path, index=False, encoding='utf-8')
+
+
+    def schedule_remove_autolock(self, pair: str):
+        """
+        Freqtrade locks a pair after closing a trade, thus preventing 
+        entering a new trade within the same candle. Sometimes it's
+        desired to adopt a ASAP strategy, and there is the need to
+        remove this Auto lock. Derived strategies can use this function
+        to schedule such removal.
+
+        :param pair: Pair to remove the Auto lock for
+        """
+
+        self.custom_info['remove-autolock'].append(pair)
+        self.log(
+            f"Scheduled {pair} for removal of Auto Lock."
+        )
+
+
+    def is_locked_until(self, pair: str) -> str:
+        """
+        Get the readable time till the specified pair is locked
+
+        :param pair: the pair to get the lock time for
+        :return str: readable date/time
+        """
+
+        until = ""
+
+        pl = PairLocks.get_pair_longest_lock(pair)
+        if pl is not None:
+            until = pl.lock_end_time.strftime("%Y-%m-%d %H:%M:%S")
+
+        return until
