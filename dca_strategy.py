@@ -262,6 +262,8 @@ class DCAStrategy(BaseStrategy):
         min_entry_cost = pairdata['limits']['cost']['min']
 
         bo_so_factor = self.get_boso_factor()
+        # TODO: calculate so_amount based on bo price reduced by the percentages the first SO will be bought on. This is 
+        # actually lower than the bo price, and must be kept into account (price limit could be on the verge)
         so_amount = amount * bo_so_factor
         so_cost = (amount * rate) * bo_so_factor
 
@@ -423,7 +425,7 @@ class DCAStrategy(BaseStrategy):
                         f"threshold {(next_safety_order_percentage - tso_start_percentage):.4f}%; reset trailing.",
                         notify=self.notify_trailing_reset
                     )
-
+                # Else case: trailing did not start and we don't need to do anything
                 return None
 
             # Increase trailing when profit has increased (in a negative way)
@@ -449,6 +451,7 @@ class DCAStrategy(BaseStrategy):
                     "DEBUG"
                 )
                 return None
+            # Else case: trailing passed the threshold and additional order can be placed
 
         # Oke, time to add a Safety Order!
         # Calculate order(s) to be filled. Can be more than one order when there's been a huge drop
