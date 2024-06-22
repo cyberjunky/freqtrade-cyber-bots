@@ -43,7 +43,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_BASE = "1.7.0"
+    STRATEGY_VERSION_BASE = "1.7.1"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -294,7 +294,7 @@ class BaseStrategy(IStrategy):
         # the trade will only be closed when the total amount has been sold
         # TODO: monitor what will happen with partially filled 'sell' orders
         if order.ft_order_side == trade.exit_side and not trade.is_open:
-            custompairkey = self.get_custom_pairkey(trade)
+            custompairkey = self.get_custom_pairkey(trade.pair, trade.trade_direction)
             del self.custom_info[custompairkey]
 
             self.log(f"Removed custom data storage for '{custompairkey}'")
@@ -376,15 +376,16 @@ class BaseStrategy(IStrategy):
             self.log(f"Created custom data storage for pair {pair_key}.")
 
 
-    def get_custom_pairkey(self, trade: 'Trade') -> str:
+    def get_custom_pairkey(self, pair: str, side: str) -> str:
         """
         Get the custom pairkey used for runtime storage of trade data
 
-        :param trade: Trade object to fetch the pairkey for
+        :param pair: Trading pair
+        :param side: Direction of the trade (long/short)
         :return str: The composed pairkey
         """
 
-        return f"{trade.pair}_{trade.trade_direction}"
+        return f"{pair}_{side}"
 
 
     def get_round_digits(self, pair: str) -> int:
