@@ -15,6 +15,7 @@ from freqtrade.strategy import (BooleanParameter, CategoricalParameter, DecimalP
 # Add your lib to import here
 import logging
 from freqtrade.constants import Config
+from freqtrade.exchange import timeframe_to_minutes
 from freqtrade.persistence import Order, PairLocks, Trade
 
 class BaseStrategy(IStrategy):
@@ -42,7 +43,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_BASE = "1.6.0"
+    STRATEGY_VERSION_BASE = "1.7.1"
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -134,7 +135,10 @@ class BaseStrategy(IStrategy):
         :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
         """
     
-        # Setup removal of autolocaks
+        # Setup cache for dataframes
+        self.custom_info['cache'] = {}
+
+        # Setup removal of autolocks
         self.custom_info['remove-autolock'] = []
 
         # Call to super first
@@ -153,6 +157,10 @@ class BaseStrategy(IStrategy):
         :param current_time: datetime object, containing the current datetime
         :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
         """
+
+        # Run the cleanup of cache once every five minutes
+        if current_time.minute % 5 == 0 and current_time.second <= 10:
+            self.cleanup_cache()
 
         # Check if there are pairs set for which the Auto lock should be reoved
         if len(self.custom_info['remove-autolock']) > 0:
@@ -286,7 +294,7 @@ class BaseStrategy(IStrategy):
         # the trade will only be closed when the total amount has been sold
         # TODO: monitor what will happen with partially filled 'sell' orders
         if order.ft_order_side == trade.exit_side and not trade.is_open:
-            custompairkey = self.get_custom_pairkey(trade)
+            custompairkey = self.get_custom_pairkey(trade.pair, trade.trade_direction)
             del self.custom_info[custompairkey]
 
             self.log(f"Removed custom data storage for '{custompairkey}'")
@@ -368,15 +376,16 @@ class BaseStrategy(IStrategy):
             self.log(f"Created custom data storage for pair {pair_key}.")
 
 
-    def get_custom_pairkey(self, trade: 'Trade') -> str:
+    def get_custom_pairkey(self, pair: str, side: str) -> str:
         """
         Get the custom pairkey used for runtime storage of trade data
 
-        :param trade: Trade object to fetch the pairkey for
+        :param pair: Trading pair
+        :param side: Direction of the trade (long/short)
         :return str: The composed pairkey
         """
 
-        return f"{trade.pair}_{trade.trade_direction}"
+        return f"{pair}_{side}"
 
 
     def get_round_digits(self, pair: str) -> int:
@@ -481,3 +490,85 @@ class BaseStrategy(IStrategy):
             until = pl.lock_end_time.strftime("%Y-%m-%d %H:%M:%S")
 
         return until
+
+
+    def cache_dataframe(self, df: DataFrame, pair: str, tf: str):
+        """
+        Store (or update) a dataframe for a certain pair and timeframe in the cache.
+        The dataframe is copied to make sure no alternations are made, and the 
+        current time will be stored in order to clean-up things later.
+
+        :param df: Dataframe to store
+        :param pair: Pair the Dataframe belongs to
+        :param tf: Timeframe the Dataframe belongs to
+        """
+
+        key = f"{pair}_{tf}"
+        if not key in self.custom_info['cache']:
+            # Create empty entry for this trade
+            self.custom_info['cache'][key] = {}
+            self.custom_info['cache'][key]['tf'] = tf
+
+            self.log(f"Created custom cache storage for {key}.")
+
+        self.custom_info['cache'][key]['df'] = df.copy()
+        self.custom_info['cache'][key]['datetime'] = datetime.now()
+
+
+    def get_dataframe_from_cache(self, pair: str, tf: str) -> DataFrame:
+        """
+        Get a dataframe from the cache, if present.
+
+        :param pair: The pair to get the dataframe for
+        :param tf: The timeframe to the dataframe for
+        :return DataFrame: Dataframe for the pair and specified timeframe, or None of not found
+        """
+
+        key = f"{pair}_{tf}"
+        if key in self.custom_info['cache']:
+            return self.custom_info['cache'][key]['df']
+
+        return None
+
+
+    def refresh_data_required(self, old_df: DataFrame, new_df: DataFrame) -> bool:
+        """
+        Determine if the cached dataframe needs to be refreshed (and data needs to be 
+        recalculated). Last candle of both dataframes is compared for this.
+
+        :param old_df: Previous DataFrame
+        :param new_df: Current DataFrame
+        :return bool: True if the last candle doesn't match, otherwise False        
+        """
+
+        refresh = False
+        if old_df is None:
+            refresh = True
+        else:
+            last_old_candle = old_df.iloc[-1].squeeze()
+            last_new_candle = new_df.iloc[-1].squeeze()
+
+            if last_old_candle['date'] != last_new_candle['date']:
+                refresh = True
+
+        return refresh
+
+
+    def cleanup_cache(self):
+        """
+        Cleanup the cache with stored dataframes if the last updated time has passed (with a margin of two minutes).
+        """
+
+        outdatedkeys = []
+
+        currentdatetime = datetime.now()
+        for key in self.custom_info['cache']:
+            minutes = (currentdatetime - self.custom_info['cache'][key]['datetime']).total_seconds() / 60
+            
+            if (minutes - 2) > timeframe_to_minutes(self.custom_info['cache'][key]['tf']):
+                outdatedkeys.append(key)
+
+                self.log(f"Removing cache storage for '{key}' because last update was {minutes} minutes ago")
+
+        for key in outdatedkeys:
+            del self.custom_info['cache'][key]

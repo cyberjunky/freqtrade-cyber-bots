@@ -12,6 +12,7 @@ from typing import Optional
 # --------------------------------
 # Add your lib to import here
 from freqtrade.constants import Config
+from freqtrade.exchange.exchange_utils_timeframe import timeframe_to_minutes
 from freqtrade.persistence import Order, Trade
 
 from .base_strategy import BaseStrategy
@@ -37,7 +38,7 @@ class DCAStrategy(BaseStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_DCA = "1.7.0"
+    STRATEGY_VERSION_DCA = "1.7.1"
 
     # Max number of safety orders (-1 means disabled)
     max_entry_position_adjustment = -1
@@ -205,7 +206,7 @@ class DCAStrategy(BaseStrategy):
         # Create custom data required for DCA
         opentrades = Trade.get_trades_proxy(is_open=True)
         for opentrade in opentrades:
-            custompairkey = self.get_custom_pairkey(opentrade)
+            custompairkey = self.get_custom_pairkey(opentrade.pair, opentrade.trade_direction)
             self.initialize_custom_data(custompairkey)
 
 
@@ -256,24 +257,32 @@ class DCAStrategy(BaseStrategy):
                 return False
 
         # Check min stake amount required for the exchange, and keeping the bo:so into account
+        # Fetch market data uncluding trading limits
         pairdata = self.dp.market(pair)
 
         min_entry_amount = pairdata['limits']['amount']['min']
         min_entry_cost = pairdata['limits']['cost']['min']
 
+        # Get our BO:SO factor
         bo_so_factor = self.get_boso_factor()
-        so_amount = amount * bo_so_factor
+
+        # Get percentage of first SO
+        _, configpairkey = self.get_pairkeys(pair, side)
+        so_deviation = self.safety_order_configuration[configpairkey]["price_deviation"]
+
+        # Calculate how much will be bought for the first SO
         so_cost = (amount * rate) * bo_so_factor
+        so_amount = so_cost / (rate * (1.0 - (so_deviation / 100.0)))
 
         if so_amount < min_entry_amount or so_cost < min_entry_cost:
             self.log(
-                f"{pair}: trading limit for a SO cannot be statisfied based on {self.trade_bo_so_ratio} ratio. "
+                f"{pair}: trading limit for first SO (on -{so_deviation:.2f}%) cannot be statisfied based on {self.trade_bo_so_ratio} ratio. "
                 f"Safety Order amount {so_amount} (based on BO amount {amount}) is lower than {min_entry_amount} and/or "
                 f"cost {so_cost} is lower than {min_entry_cost}. "
                 f"Not starting this trade.",
                 "WARNING"
             )
-            self.lock_pair(pair, until=current_time + timedelta(minutes=1), reason="Min order limits could not be statisfied")
+            self.lock_pair(pair, until=current_time + timedelta(minutes=timeframe_to_minutes(self.timeframe)), reason="Min order limits could not be statisfied")
             return False
 
         self.initialize_custom_data(pairkey)
@@ -295,7 +304,7 @@ class DCAStrategy(BaseStrategy):
         super().order_filled(pair, trade, order, current_time)
 
         if order.ft_order_side == trade.entry_side:
-            custompairkey = self.get_custom_pairkey(trade)
+            custompairkey = self.get_custom_pairkey(trade.pair, trade.trade_direction)
             openorders = len(self.custom_info[custompairkey]["open_safety_orders"])
             if openorders > 0:
                 # Check if the first order from the list has been bought. Remove the bought order and check if there are other
@@ -371,7 +380,7 @@ class DCAStrategy(BaseStrategy):
             return None
 
         # Create pairkey, or use 'default' 
-        custompairkey, configpairkey = self.get_pairkeys(trade)
+        custompairkey, configpairkey = self.get_pairkeys(trade.pair, trade.trade_direction)
 
         # Return when all Safety Orders are executed
         count_of_entries = trade.nr_of_successful_entries
@@ -423,7 +432,7 @@ class DCAStrategy(BaseStrategy):
                         f"threshold {(next_safety_order_percentage - tso_start_percentage):.4f}%; reset trailing.",
                         notify=self.notify_trailing_reset
                     )
-
+                # Else case: trailing did not start and we don't need to do anything
                 return None
 
             # Increase trailing when profit has increased (in a negative way)
@@ -449,6 +458,7 @@ class DCAStrategy(BaseStrategy):
                     "DEBUG"
                 )
                 return None
+            # Else case: trailing passed the threshold and additional order can be placed
 
         # Oke, time to add a Safety Order!
         # Calculate order(s) to be filled. Can be more than one order when there's been a huge drop
@@ -698,15 +708,16 @@ class DCAStrategy(BaseStrategy):
         self.custom_info[custom_pair_key]["open_safety_orders"] = list() # List of open Safety Orders to buy
 
 
-    def get_pairkeys(self, trade: 'Trade') -> tuple[str, str]:
+    def get_pairkeys(self, pair: str, side: str) -> tuple[str, str]:
         """
         Get the custom pairkey used for runtime storage of trade data.
 
-        :param trade: Trade object of the trade for which the pairkeys should be fetched
+        :param pair: Trading pair
+        :param side: Direction of the trade (long/short)
         :return tuple[str, str]: key for custom data storage, and key for configuration data
         """
 
-        custompairkey = super().get_custom_pairkey(trade)
+        custompairkey = super().get_custom_pairkey(pair, side)
         configpairkey = custompairkey
         if not configpairkey in self.safety_order_configuration:
             configpairkey = "default"
