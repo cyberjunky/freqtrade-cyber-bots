@@ -43,7 +43,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_BASE = '1.8.0'
+    STRATEGY_VERSION_BASE = '1.9.0'
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -406,7 +406,7 @@ class BaseStrategy(IStrategy):
         return numberofdigits
 
 
-    def log(self, message: str, level='INFO', notify=False):
+    def log(self, message: str, level='INFO', notify=None):
         """
         Function for logging data on a certain level Can also send
         a notification. For WARNING and ERROR the nofication is always send.
@@ -416,6 +416,8 @@ class BaseStrategy(IStrategy):
         :param notify: Indication if a notification should be send
         """
 
+        send_notification = False if notify is None else notify
+
         if self.logger:
             match level:
                 case 'INFO':
@@ -424,12 +426,12 @@ class BaseStrategy(IStrategy):
                     self.logger.debug(message)
                 case 'WARNING':
                     self.logger.warning(message)
-                    notify = True # Force notification
+                    send_notification = True if notify is None else notify # Force notification
                 case 'ERROR':
                     self.logger.error(message)
-                    notify = True # Force notification
+                    send_notification = True if notify is None else notify # Force notification
 
-        if notify:
+        if send_notification:
             self.dp.send_msg(message)
 
 
