@@ -38,7 +38,7 @@ class DCAStrategy(BaseStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_DCA = '1.8.0'
+    STRATEGY_VERSION_DCA = '1.9.0'
 
     # Max number of safety orders (-1 means disabled)
     max_entry_position_adjustment = -1
@@ -80,6 +80,8 @@ class DCAStrategy(BaseStrategy):
     notify_trailing_update = True
     notify_trailing_reset = True
 
+    patch_dca_table = False
+
 
     def version(self) -> Optional[str]:
         """
@@ -117,6 +119,18 @@ class DCAStrategy(BaseStrategy):
         if 'safety_order_mode' in config:
             if config['safety_order_mode'] in ('shift', 'merge'):
                 self.safety_order_mode = config['safety_order_mode']
+
+        if 'safety_configuration' in config:
+            if isinstance(config['safety_configuration'], dict):
+                self.load_safety_config(config['safety_configuration'])
+
+        if 'trailing_configuration' in config:
+            if isinstance(config['trailing_configuration'], dict):
+                self.load_trailing_config(config['trailing_configuration'])
+
+        if 'patch_dca_table' in config:
+            if isinstance(config['patch_dca_table'], bool):
+                self.patch_dca_table = config['patch_dca_table']
 
         bo_so = 1.0
         if 'bo:so' in config:
@@ -202,10 +216,6 @@ class DCAStrategy(BaseStrategy):
             so_count = 1
             max_so = self.safety_order_configuration[pairkey]['max_so']
             while(so_count <= max_so):
-                #so_volume = self.calculate_dca_volume(so_count, pairkey, max_so)
-                #so_total_volume = self.calculate_dca_volume_total(so_count, pairkey, max_so)
-                #so_step_deviation = self.calculate_dca_step_deviation(so_count, pairkey, max_so)
-                #so_total_deviation = self.calculate_dca_deviation_total(so_count, pairkey, max_so)
                 so_volume = dca_tbl[so_count - 1]['volume']
                 so_total_volume = dca_tbl[so_count - 1]['total_volume']
                 so_step_deviation = dca_tbl[so_count - 1]['deviation_current']
@@ -221,13 +231,58 @@ class DCAStrategy(BaseStrategy):
         opentrades = Trade.get_trades_proxy(is_open=True)
         for opentrade in opentrades:
             # Check pressence of dca table
-            dca_tbl = opentrade.get_custom_data(key='dca_table')
-            if dca_tbl is None:
-                dca_tbl = self.get_initial_dca_table(opentrade.pair, opentrade.trade_direction)
-                opentrade.set_custom_data(key='dca_table', value=dca_tbl)
+            trade_dca_tbl = opentrade.get_custom_data(key='dca_table')
+            if trade_dca_tbl is None:
+                trade_dca_tbl = self.get_initial_dca_table(opentrade.pair, opentrade.trade_direction)
+                opentrade.set_custom_data(key='dca_table', value=trade_dca_tbl)
                 self.log(f"{opentrade.pair}: added initial dca table")
+            elif self.patch_dca_table:
+                dca_tbl = self.get_initial_dca_table(opentrade.pair, opentrade.trade_direction)
 
-            self.log(f"{opentrade.pair}: dca table = '{dca_tbl}'")
+                configuredcount = len(dca_tbl)
+                currentcount = len(trade_dca_tbl)
+
+                if configuredcount > currentcount:
+                    shift_percentage = trade_dca_tbl[-1]['total_deviation_current'] - trade_dca_tbl[-1]['total_deviation_initial']
+
+                    trade_dca_tbl += dca_tbl[currentcount:]
+
+                    self.shift_dca_table(trade_dca_tbl, currentcount + 1, shift_percentage, True)
+
+                    opentrade.set_custom_data(key='dca_table', value=trade_dca_tbl)
+
+                    self.log(
+                        f"{opentrade.pair}: patched dca_tbl by copying orders from {currentcount} to {configuredcount}. "
+                        f"Shifted from {currentcount + 1} by {shift_percentage:.2f}%."
+                    )
+                elif configuredcount < currentcount:
+                    count_of_entries = opentrade.nr_of_successful_entries
+                    if (count_of_entries - 1) <= configuredcount:
+                        if count_of_entries == 1:
+                            trade_dca_tbl = trade_dca_tbl[0:0]
+                            trade_dca_tbl += dca_tbl[0:]
+
+                            opentrade.set_custom_data(key='dca_table', value=trade_dca_tbl)
+
+                            self.log(f"{opentrade.pair}: patched dca_tbl by replacing all Safety Orders as only base order was filled.")
+                        else:
+                            trade_dca_tbl = trade_dca_tbl[0:configuredcount]
+
+                            opentrade.set_custom_data(key='dca_table', value=trade_dca_tbl)
+
+                            self.log(f"{opentrade.pair}: patched dca_tbl by removing orders after order {configuredcount}.")
+                    else:
+                        trade_dca_tbl = trade_dca_tbl[0:(count_of_entries - 1)]
+
+                        opentrade.set_custom_data(key='dca_table', value=trade_dca_tbl)
+
+                        self.log(
+                            f"{opentrade.pair}: patched dca_tbl by removing only not filled orders after {(count_of_entries - 1)}. "
+                            f"Configured number of orders {configuredcount} is less, but already {(count_of_entries - 1)} orders are filled!",
+                            level="WARNING"
+                        )
+
+            self.log(f"{opentrade.pair}: dca table = '{trade_dca_tbl}'")
 
             custompairkey = self.get_custom_pairkey(opentrade.pair, opentrade.trade_direction)
             self.initialize_custom_data(custompairkey)
@@ -291,8 +346,6 @@ class DCAStrategy(BaseStrategy):
 
         # Get percentage of first SO
         dca_tbl = self.get_initial_dca_table(pair, side)
-        #_, configpairkey = self.get_pairkeys(pair, side)
-        #so_deviation = self.safety_order_configuration[configpairkey]['price_deviation']
         if len(dca_tbl) > 0:
             so_deviation = dca_tbl[0]['deviation_current']
 
@@ -350,7 +403,7 @@ class DCAStrategy(BaseStrategy):
                 count_of_entries = trade.nr_of_successful_entries
                 count_of_safety_orders = count_of_entries - 1 # Subtract Base Order
                 if self.custom_info[custompairkey]['open_safety_orders'][0]['order'] == count_of_safety_orders:
-                    if self.safety_order_mode is 'shift':
+                    if self.safety_order_mode == 'shift':
                         # Calculate shift percentage, based on configured SO deviation and actual profit percentage bought on
                         profit_percentage = self.custom_info[custompairkey]['open_safety_orders'][0]['current_deviation']
                         safety_order_percentage = self.custom_info[custompairkey]['open_safety_orders'][0]['total_deviation']
@@ -363,11 +416,11 @@ class DCAStrategy(BaseStrategy):
 
                         # Shift the DCA tabel by this percentage and store it with the trade
                         dca_table = trade.get_custom_data(key='dca_table')
-                        self.shift_dca_table(dca_table, count_of_entries, shift_percentage)
+                        self.shift_dca_table(dca_table, count_of_safety_orders, shift_percentage)
                         trade.set_custom_data(key='dca_table', value=dca_table)
 
                         self.log(
-                            f"{trade.pair}: shifted dca table by {shift_percentage:.4f}% from order {count_of_entries}. "
+                            f"{trade.pair}: shifted dca table by {shift_percentage:.4f}% from order {count_of_safety_orders}. "
                             f"Max deviation shifted from {dca_table[-1]['total_deviation_initial']:.4f}% to {dca_table[-1]['total_deviation_current']:.4f}%.",
                             notify=True
                         )
@@ -390,7 +443,7 @@ class DCAStrategy(BaseStrategy):
             count_of_entries = len(filled_entries)
 
             deviationmsg = ""
-            if self.safety_order_mode is 'shift':
+            if self.safety_order_mode == 'shift':
                 dca_table = trade.get_custom_data(key='dca_table')
                 if len(dca_table) > 0:
                     deviationmsg = f"Max deviation was shifted from {dca_table[-1]['total_deviation_initial']:.4f}% to {dca_table[-1]['total_deviation_current']:.4f}%."
@@ -454,10 +507,13 @@ class DCAStrategy(BaseStrategy):
         # Return when all Safety Orders are executed
         count_of_entries = trade.nr_of_successful_entries
         count_of_safety_orders = count_of_entries - 1 # Subtract Base Order
-        #TODO: check based on dca_table and not on configuration
-        if count_of_safety_orders >= self.safety_order_configuration[configpairkey]['max_so']:
+
+        dca_table = trade.get_custom_data(key='dca_table')
+        max_orders = len(dca_table)
+        #if count_of_safety_orders >= self.safety_order_configuration[configpairkey]['max_so']:
+        if count_of_safety_orders >= max_orders:
             self.log(
-                f"{trade.pair}: reached max number ({self.safety_order_configuration[configpairkey]['max_so']}) of Safety Orders.",
+                f"{trade.pair}: reached max number ({max_orders}) of Safety Orders.",
                 "DEBUG"
             )
             return None
@@ -564,6 +620,55 @@ class DCAStrategy(BaseStrategy):
 
         # Return volume for entry order
         return volume, f"Safety Order {count_of_entries}"
+
+
+    def load_safety_config(self, safety_config: dict) -> None:
+        """
+        Load safety order configuration based on supplied dict of configuration elements
+        """
+
+        # We don't clear the safety order configuration to allow changing a single value
+
+        for pk, pv in safety_config.items():
+            if not ('_long' in pk or '_short' in pk) and pk != 'default':
+                self.log(f"Invalid safety order configuration key '{pk}'!", 'WARNING', False)
+                continue
+
+            if pk not in self.safety_order_configuration:
+                self.safety_order_configuration[pk] = {}
+
+            for k, v in pv.items():
+                if k in ('price_deviation', 'volume_scale', 'step_scale', 'max_so'):
+                    self.safety_order_configuration[pk][k] = v
+                    self.log(f"Set safety order configuration key '{k}' for pair '{pk}' to value '{v}'")
+                else:
+                    self.log(f"Unknown safety order configuration key '{k}' for pair '{pk}'!", 'WARNING', False)
+
+
+    def load_trailing_config(self, trailing_config: dict) -> None:
+        """
+        Load trailing configuration based on supplied dict of configuration elements
+        """
+
+        for pk, pv in trailing_config.items():
+            if not ('_long' in pk or '_short' in pk) and pk != 'default':
+                self.log(f"Invalid trailing configuration key '{pk}'!", 'WARNING', False)
+                continue
+
+            # Create pair section, or clear the existing one to load the new configuration
+            if pk not in self.trailing_safety_order_configuration:
+                self.trailing_safety_order_configuration[pk] = {}
+            else:
+                self.trailing_safety_order_configuration[pk].clear()
+
+            for index, entry in enumerate(pv):
+                self.trailing_safety_order_configuration[pk][index] = {}
+                for k, v in entry.items():
+                    if k in ('start_percentage', 'factor'):
+                        self.trailing_safety_order_configuration[pk][index][k] = v
+                        self.log(f"Set trailing order configuration key '{k}' for pair '{pk}' on index '{index}' to value '{v}'")
+                    else:
+                        self.log(f"Unknown trailing order configuration key '{k}' for pair '{pk}' on index '{index}'!", 'WARNING', False)
 
 
     def get_trailing_config(self, profit_percentage, safety_order_percentage, config_pair_key) -> tuple[bool, float, float]:
@@ -713,7 +818,6 @@ class DCAStrategy(BaseStrategy):
         return total_deviation
 
 
-    #def determine_required_safety_orders(self, dca_table: list, current_safety_order: int, current_price_deviation: float, config_pair_key, max_safety_orders) -> float:
     def determine_required_safety_orders(self, dca_table: list, current_safety_order: int, current_price_deviation: float) -> list:
         """
         DCA implementation; calculate the total price deviation from the entry price including the
@@ -735,13 +839,6 @@ class DCAStrategy(BaseStrategy):
 
         max_safety_orders = len(dca_table)
         if 0 <= current_safety_order <= max_safety_orders:
-            #so_count = 1
-            #step_deviation = 0.0
-            #total_deviation = 0.0
-            #while (so_count <= current_safety_order):
-            #    step_deviation = self.calculate_dca_step_deviation(so_count, config_pair_key, max_safety_orders)
-            #    total_deviation += step_deviation
-            #    so_count += 1
 
             self.log(
                 f"Determing order list starting from {current_safety_order} till max {max_safety_orders}..."
@@ -749,9 +846,6 @@ class DCAStrategy(BaseStrategy):
 
             so_count = current_safety_order + 1
             while (so_count <= max_safety_orders):
-                #step_deviation = self.calculate_dca_step_deviation(so_count, config_pair_key, max_safety_orders)
-                #total_deviation += step_deviation
-
                 # Break when the Safety Order is not reached yet
                 idx = so_count - 1
                 if current_price_deviation > dca_table[idx]['total_deviation_current']:
@@ -774,7 +868,7 @@ class DCAStrategy(BaseStrategy):
                 )
 
                 # Break if Safety Orders may not be merged
-                if self.safety_order_mode is not 'merge':
+                if self.safety_order_mode != 'merge':
                     break;
 
                 so_count += 1
@@ -869,9 +963,11 @@ class DCAStrategy(BaseStrategy):
         return table
 
 
-    def shift_dca_table(self, dca_table: list, start_from_order: int, shift_percentage: float):
+    def shift_dca_table(self, dca_table: list, start_from_order: int, shift_percentage: float, only_total = False):
         """
         Shift the values in the DCA table by the given percentage from a certain order
+        Will shift the deviation for the current order number to account for the shift, and 
+        the total deviation for all the orders after that one.
 
         :param dca_table: DCA table to shift
         :param start_from_order: Order number to start shifting from
@@ -884,7 +980,7 @@ class DCAStrategy(BaseStrategy):
                 continue
 
             # Update deviation for current order
-            if safetyorder['order'] == start_from_order:
+            if not only_total & safetyorder['order'] == start_from_order:
                 safetyorder['deviation_current'] += shift_percentage
                 continue
 
