@@ -97,13 +97,6 @@ class ExampleStrat(DCAStrategy):
         self.safety_order_configuration["BTC/USDC_long"]["step_scale"] = 0.95
         self.safety_order_configuration["BTC/USDC_long"]["max_so"] = 6
 
-        self.safety_order_configuration["ETH/USDC_long"] = {}
-        self.safety_order_configuration["ETH/USDC_long"]["initial_so_amount"] = config["stake_amount"]
-        self.safety_order_configuration["ETH/USDC_long"]["price_deviation"] = 1.85
-        self.safety_order_configuration["ETH/USDC_long"]["volume_scale"] = 1.15
-        self.safety_order_configuration["ETH/USDC_long"]["step_scale"] = 1.00
-        self.safety_order_configuration["ETH/USDC_long"]["max_so"] = 8
-
         # Use trailing safety orders
         self.trailing_safety_order_configuration.clear()
         self.trailing_safety_order_configuration['default'] = {}
