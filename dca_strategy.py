@@ -207,25 +207,25 @@ class DCAStrategy(BaseStrategy):
                 pair, direction = pairkey.split('_')
 
             self.log(f"Safety Order overview for '{pair}' in direction '{direction}':")
-
-            dca_tbl = self.get_initial_dca_table(pair, direction)
-
             self.log(
                 f"BO | Deviation 0.0% | Order volume {self.stake_amount} ({self.stake_amount})"
             )
-            so_count = 1
-            max_so = self.safety_order_configuration[pairkey]['max_so']
-            while(so_count <= max_so):
-                so_volume = dca_tbl[so_count - 1]['volume']
-                so_total_volume = dca_tbl[so_count - 1]['total_volume']
-                so_step_deviation = dca_tbl[so_count - 1]['deviation_current']
-                so_total_deviation = dca_tbl[so_count - 1]['total_deviation_current']
-                
-                self.log(
-                    f"SO {so_count} | Deviation {so_step_deviation}% ({so_total_deviation}%) | Order volume {so_volume} ({so_total_volume})"
-                )
 
-                so_count += 1
+            dca_tbl = self.get_initial_dca_table(pair, direction)
+            if len(dca_tbl) > 0:
+                so_count = 1
+                max_so = self.safety_order_configuration[pairkey]['max_so']
+                while(so_count <= max_so):
+                    so_volume = dca_tbl[so_count - 1]['volume']
+                    so_total_volume = dca_tbl[so_count - 1]['total_volume']
+                    so_step_deviation = dca_tbl[so_count - 1]['deviation_current']
+                    so_total_deviation = dca_tbl[so_count - 1]['total_deviation_current']
+                    
+                    self.log(
+                        f"SO {so_count} | Deviation {so_step_deviation}% ({so_total_deviation}%) | Order volume {so_volume} ({so_total_volume})"
+                    )
+
+                    so_count += 1
 
         # Create custom data required for DCA
         opentrades = Trade.get_trades_proxy(is_open=True)
@@ -568,7 +568,7 @@ class DCAStrategy(BaseStrategy):
             if current_entry_profit_percentage < self.custom_info[custompairkey]['last_profit_percentage']:
                 new_threshold = next_safety_order_percentage + ((current_entry_profit_percentage - next_safety_order_percentage) * tso_factor)
 
-                send_notification = ((self.custom_info[custompairkey]['last_profit_percentage'] == 0.0) & self.notify_trailing_start) | self.notify_trailing_update
+                send_notification = ((self.custom_info[custompairkey]['last_profit_percentage'] == 0.0) and self.notify_trailing_start) or self.notify_trailing_update
                 self.log(
                     f"{trade.pair}: profit from {self.custom_info[custompairkey]['last_profit_percentage']:.4f}% to {current_entry_profit_percentage:.4f}% "
                     f"(trailing from {next_safety_order_percentage:.4f}%). "
@@ -980,9 +980,8 @@ class DCAStrategy(BaseStrategy):
                 continue
 
             # Update deviation for current order
-            if not only_total & safetyorder['order'] == start_from_order:
+            if (not only_total) and (safetyorder['order'] == start_from_order):
                 safetyorder['deviation_current'] += shift_percentage
-                continue
 
-            # Shift future orders
+            # Record shift for current order and shift future orders
             safetyorder['total_deviation_current'] += shift_percentage
