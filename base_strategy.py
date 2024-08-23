@@ -43,7 +43,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_BASE = "1.7.1"
+    STRATEGY_VERSION_BASE = '1.9.0'
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -109,7 +109,7 @@ class BaseStrategy(IStrategy):
         super().__init__(config)
 
         # Initialize logger
-        self.logger = logging.getLogger("freqtrade.strategy")
+        self.logger = logging.getLogger('freqtrade.strategy')
 
         # Make sure the contents of the Leverage configuration is correct
         for k, v in self.leverage_configuration.items():
@@ -164,7 +164,7 @@ class BaseStrategy(IStrategy):
 
         # Check if there are pairs set for which the Auto lock should be reoved
         if len(self.custom_info['remove-autolock']) > 0:
-            self.unlock_reason("Auto lock")
+            self.unlock_reason('Auto lock')
 
             # Sanity check to alert when removing the lock failed
             for pair in self.custom_info['remove-autolock']:
@@ -323,8 +323,8 @@ class BaseStrategy(IStrategy):
         pairkey = f"{pair}_{side}"
         if pairkey in self.leverage_configuration:
             leverage = self.leverage_configuration[pairkey]
-        elif "default" in self.leverage_configuration:
-            leverage =  self.leverage_configuration["default"]
+        elif 'default' in self.leverage_configuration:
+            leverage =  self.leverage_configuration['default']
 
         self.log(f"Returning leverage '{leverage}' for pair {pair} and side {side}. Configuration = {self.leverage_configuration}")
 
@@ -398,15 +398,15 @@ class BaseStrategy(IStrategy):
 
         numberofdigits = 4
 
-        base = pair.split("/")[1]
+        base = pair.split('/')[1]
 
-        if base in ("BTC", "ETH"):
+        if base in ('BTC', 'ETH'):
             numberofdigits = 8
 
         return numberofdigits
 
 
-    def log(self, message: str, level="INFO", notify=False):
+    def log(self, message: str, level='INFO', notify=None):
         """
         Function for logging data on a certain level Can also send
         a notification. For WARNING and ERROR the nofication is always send.
@@ -416,20 +416,22 @@ class BaseStrategy(IStrategy):
         :param notify: Indication if a notification should be send
         """
 
+        send_notification = False if notify is None else notify
+
         if self.logger:
             match level:
-                case "INFO":
+                case 'INFO':
                     self.logger.info(message)
-                case "DEBUG":
+                case 'DEBUG':
                     self.logger.debug(message)
-                case "WARNING":
+                case 'WARNING':
                     self.logger.warning(message)
-                    notify = True # Force notification
-                case "ERROR":
+                    send_notification = True if notify is None else notify # Force notification
+                case 'ERROR':
                     self.logger.error(message)
-                    notify = True # Force notification
+                    send_notification = True if notify is None else notify # Force notification
 
-        if notify:
+        if send_notification:
             self.dp.send_msg(message)
 
 
@@ -487,7 +489,7 @@ class BaseStrategy(IStrategy):
 
         pl = PairLocks.get_pair_longest_lock(pair)
         if pl is not None:
-            until = pl.lock_end_time.strftime("%Y-%m-%d %H:%M:%S")
+            until = pl.lock_end_time.strftime('%Y-%m-%d %H:%M:%S')
 
         return until
 
