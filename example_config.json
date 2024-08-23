@@ -1,0 +1,158 @@
+{
+    "timeframe": "1m",
+    "max_open_trades": 2,
+    "stake_currency": "USDC",
+    "stake_amount": 5.0,
+    "fiat_display_currency": "USDC",
+    "cancel_open_orders_on_exit": false,
+    "trading_mode": "spot",
+    "margin_mode": "isolated",
+    "tradable_balance_ratio": 0.99,
+    "dry_run": true,
+    "dry_run_wallet": 500.0,
+    "liquidation_buffer": 0.5,
+    "stoploss": -0.99,    
+    "trailing_stop": false,
+    "trailing_only_offset_is_reached": true,
+    "trailing_stop_positive": 0.015,
+    "trailing_stop_positive_offset": 0.025,
+    "trading_direction": "long",
+    "safety_order_mode": "shift",
+    "safety_configuration": {
+    	"default": {
+	    "price_deviation": 2.25,
+	    "volume_scale": 1.04,
+	    "step_scale": 0.97,
+	    "max_so": 8
+	},
+	"BTC/USDC_long": {
+	    "max_so": 8
+	}
+    },
+    "trailing_configuration": {
+	"ETH/USDC_long": [
+	    {
+	       "start_percentage": 0.5,
+	       "factor": 0.25
+	    },
+    	    {
+	       "start_percentage": 0.75,
+	       "factor": 0.35
+	    },
+    	    {
+	       "start_percentage": 1.0,
+	       "factor": 0.45
+	    },
+    	    {
+	       "start_percentage": 1.5,
+	       "factor": 0.55
+	    },
+    	    {
+	       "start_percentage": 2.5,
+	       "factor": 0.95
+	    }
+	]
+    },
+    "patch_dca_table": true,
+    "unfilledtimeout": {
+        "entry": 60,
+        "exit": 30,
+        "exit_timeout_count": 0,
+        "unit": "seconds"
+    },
+    "order_types": {
+        "entry": "market",
+        "exit": "market",
+        "emergency_exit": "market",
+        "force_entry": "market",
+        "force_exit": "market",
+        "stoploss": "limit",
+        "stoploss_on_exchange": false,
+        "stoploss_on_exchange_interval": 60
+    },
+    "entry_pricing": {
+        "price_side": "other",
+        "use_order_book": false,
+        "order_book_top": 4,
+        "price_last_balance": 0.0,
+        "check_depth_of_market": {
+            "enabled": false,
+            "bids_to_ask_delta": 1
+        }
+    },
+    "exit_pricing":{
+        "price_side": "other",
+        "use_order_book": false,
+        "order_book_top": 2
+    },
+    "order_time_in_force": {
+        "entry": "GTC",
+        "exit": "GTC"
+    },
+    "exchange": {
+    	"name": "bybit",
+        "key": "",
+        "secret": "",
+        "password": "",
+        "ccxt_config": {
+            "enableRateLimit": true
+        },
+        "ccxt_async_config": {
+            "enableRateLimit": true
+        },
+        "pair_whitelist": [
+            "BTC/USDC",
+            "ETH/USDC"
+        ],
+        "pair_blacklist": [
+        ]
+    },
+    "pairlists": [
+        {
+            "method": "StaticPairList"
+        },
+        {
+            "method": "FullTradesFilter"
+        }
+    ],
+    "telegram": {
+        "enabled": false,
+        "token": "",
+        "chat_id": "",
+        "allow_custom_messages": true,
+        "notification_settings": {
+            "status": "silent",
+            "warning": "on",
+            "startup": "silent",
+            "entry": "off",
+            "entry_fill": "on",
+            "entry_cancel": "silent",
+            "exit": {
+                "roi": "silent",
+                "emergency_exit": "on",
+                "force_exit": "on",
+                "exit_signal": "silent",
+                "trailing_stop_loss": "silent",
+                "stop_loss": "silent",
+                "stoploss_on_exchange": "silent",
+                "custom_exit": "silent",
+                "partial_exit": "silent"
+            },
+            "exit_cancel": "silent",
+            "exit_fill": "on",
+            "protection_trigger": "on",
+            "protection_trigger_global": "on",
+            "strategy_msg": "on",
+            "show_candle": "off"
+        },
+        "reload": true,
+        "balance_dust_level": 0.001
+    },
+    "recursive_strategy_search": true,
+    "initial_state": "running",
+    "force_entry_enable": false,
+    "internals": {
+        "process_throttle_secs": 5
+    },
+    "bot_name": "Freqtrade example config and strategy test"
+}
