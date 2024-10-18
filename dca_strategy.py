@@ -38,7 +38,7 @@ class DCAStrategy(BaseStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_DCA = '1.9.0'
+    STRATEGY_VERSION_DCA = '1.10.0'
 
     # Max number of safety orders (-1 means disabled)
     max_entry_position_adjustment = -1
@@ -79,6 +79,19 @@ class DCAStrategy(BaseStrategy):
     notify_trailing_start = True
     notify_trailing_update = True
     notify_trailing_reset = True
+
+    # Trailing Profit configuration. 
+    # First try to use the configuration for the pair and direction, then try 'default'. If none of them are 
+    # available, no trailing will be used for placing Safety Order(s).
+    trailing_profit_configuration = {}
+    trailing_profit_configuration['default'] = {}
+    trailing_profit_configuration['default'][0] = {}
+    trailing_profit_configuration['default'][0]['activation-percentage'] = 0.25
+    trailing_profit_configuration['default'][0]['min-order-threshold'] = 0.50
+    trailing_profit_configuration['default'][0]['sell-percentage'] = 0.25
+    trailing_profit_configuration['default'][0]['stoploss-initial'] = 0.50
+    trailing_profit_configuration['default'][0]['stoploss-increment-factor'] = 0.50
+    trailing_profit_configuration['default'][0]['profit-increment-factor'] = 0.50
 
     patch_dca_table = False
 
@@ -179,6 +192,8 @@ class DCAStrategy(BaseStrategy):
             # Make sure the max of entry adjustments is set to the highest number of max Safety Orders
             if self.max_entry_position_adjustment < max_so:
                 self.max_entry_position_adjustment = max_so
+
+                self.log(f"Adjusted number of position adjustments to {self.max_entry_position_adjustment}!")
 
         # Disabled by default, so enable when there are additional Safety Orders configured
         if self.max_entry_position_adjustment > 0:
@@ -437,8 +452,8 @@ class DCAStrategy(BaseStrategy):
                         f"There are {openorders} orders left.",
                         notify=True
                     )
-        else:
-            # Send notification about number of entries used to exit the trade
+        elif not trade.is_open:
+            # Trade completely exited; send notification about number of entries used to exit
             filled_entries = trade.select_filled_orders(trade.entry_side)
             count_of_entries = len(filled_entries)
 
