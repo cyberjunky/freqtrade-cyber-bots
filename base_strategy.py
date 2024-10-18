@@ -4,6 +4,7 @@
 # --- Do not remove these libs ---
 #import numpy as np
 #import pandas as pd
+from math import fabs
 from pandas import DataFrame
 from datetime import datetime
 from typing import Optional
@@ -43,7 +44,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_BASE = '1.9.0'
+    STRATEGY_VERSION_BASE = '1.9.1'
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -67,8 +68,7 @@ class BaseStrategy(IStrategy):
     min_profit = 0.0025 # 0.25%
 
     # Stoploss configuration
-    use_custom_stoploss = True
-    stoploss_configuration = {}
+    use_custom_stoploss = False
 
     # Trailing stoploss
     trailing_stop = False
@@ -89,6 +89,8 @@ class BaseStrategy(IStrategy):
 
     # Create custom dictionary for storing run-time data
     custom_info = {}
+
+    config_max_trades = 0
 
 
     def version(self) -> Optional[str]:
@@ -111,14 +113,15 @@ class BaseStrategy(IStrategy):
         # Initialize logger
         self.logger = logging.getLogger('freqtrade.strategy')
 
+        # Read config
+        if 'max_open_trades' in config:
+            if isinstance(config['max_open_trades'], int):
+                self.config_max_trades = config['max_open_trades']
+
         # Make sure the contents of the Leverage configuration is correct
         for k, v in self.leverage_configuration.items():
             self.leverage_configuration[k] = float(v)
-
-        # Make sure the contents of the Stoploss configuration is correct
-        for k, v in self.stoploss_configuration.items():
-            self.stoploss_configuration[k] = float(v)
-        
+       
         # Update minimum ROI table keeping leverage into account
         # TODO: improve later on with custom exit with profit and leverage calculation for each pair
         leverage = min(self.leverage_configuration.values()) if len(self.leverage_configuration) > 0 else 1.0
@@ -144,9 +147,10 @@ class BaseStrategy(IStrategy):
         # Call to super first
         super().bot_start()
         self.log(f"Version - Base Strategy: '{BaseStrategy.version(self)}'")
-
-        self.log(f"Running with stoploss configuration: '{self.stoploss_configuration}'")
         self.log(f"Running with leverage configuration: '{self.leverage_configuration}'")
+
+        # Determine max number of trades
+        self.update_max_trade_count()
 
 
     def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
@@ -158,9 +162,13 @@ class BaseStrategy(IStrategy):
         :param **kwargs: Ensure to keep this here so updates to this won't break your strategy.
         """
 
-        # Run the cleanup of cache once every five minutes
-        if current_time.minute % 5 == 0 and current_time.second <= 10:
+        # Run some tasks once every five minutes
+        if current_time.minute % 5 == 0 and current_time.second <= 8:
+            # Clean cache
             self.cleanup_cache()
+
+            # Determine max number of active trades
+            self.update_max_trade_count()
 
         # Check if there are pairs set for which the Auto lock should be reoved
         if len(self.custom_info['remove-autolock']) > 0:
@@ -295,9 +303,14 @@ class BaseStrategy(IStrategy):
         # TODO: monitor what will happen with partially filled 'sell' orders
         if order.ft_order_side == trade.exit_side and not trade.is_open:
             custompairkey = self.get_custom_pairkey(trade.pair, trade.trade_direction)
-            del self.custom_info[custompairkey]
 
-            self.log(f"Removed custom data storage for '{custompairkey}'")
+            if custompairkey in self.custom_info:
+                del self.custom_info[custompairkey]
+
+                self.log(f"Removed custom data storage for '{custompairkey}'")
+
+        # Determine max number of trades
+        self.update_max_trade_count()
 
         return None
 
@@ -353,13 +366,13 @@ class BaseStrategy(IStrategy):
         :return float: New stoploss value, relative to the current rate
         """
 
-        sl = self.stoploss
+        #sl = self.stoploss
 
-        pairkey = f"{pair}_{trade.trade_direction}"
-        if pairkey in self.stoploss_configuration:
-            sl = self.stoploss_configuration[pairkey] * self.leverage_configuration[pairkey]
+        #pairkey = f"{pair}_{trade.trade_direction}"
+        #if pairkey in self.stoploss_configuration:
+        #    sl = self.stoploss_configuration[pairkey] * self.leverage_configuration[pairkey]
 
-        return sl
+        return None
 
 
     def create_custom_data(self, pair_key):
@@ -574,3 +587,61 @@ class BaseStrategy(IStrategy):
 
         for key in outdatedkeys:
             del self.custom_info['cache'][key]
+
+
+    def update_max_trade_count(self):
+        """
+        Update the max number of active trades. A new trade is allowed to start when another trade is
+        running in stoploss, meaning no funds are required for additional orders. These funds can be
+        used to open already a new trade, optimizing the performance of the wallet.
+        """
+
+        sl_trade_count = self.get_trade_stoploss_count()
+        current_trade_count = self.max_open_trades
+
+        new_trade_count = self.config_max_trades + sl_trade_count
+
+        if current_trade_count != new_trade_count:
+            self.log(
+                f"Changing max allowed open trades from {current_trade_count} to {new_trade_count} based on "
+                f"config {self.config_max_trades} and currently {sl_trade_count} trades running in stoploss.",
+                notify=True
+            )
+            self.max_open_trades = new_trade_count
+            self.config['max_open_trades'] = new_trade_count
+        else:
+            self.log(
+                f"Leaving max allowed open trades on {new_trade_count} based on "
+                f"config {self.config_max_trades} and currently {sl_trade_count} trades running in stoploss."
+            )
+
+
+    def get_trade_stoploss_count(self):
+        """
+        Get the number of trades with an active stoploss
+        """
+
+        trade_count = 0
+
+        opentrades = Trade.get_trades_proxy(is_open=True)
+        for opentrade in opentrades:
+            ticker = self.dp.ticker(opentrade.pair)
+            current_rate = ticker['last']
+
+            # calculate distance to stoploss
+            stoploss_current_dist = opentrade.stop_loss - current_rate
+            stoploss_current_dist_ratio = stoploss_current_dist / current_rate
+
+            self.log(
+                f"{opentrade.pair}: current_rate is {current_rate}. Stoploss is {opentrade.stop_loss} ({opentrade.stop_loss_pct}%). SL distance is {stoploss_current_dist} with ratio {stoploss_current_dist_ratio}.",
+                "INFO"
+            )
+
+            if fabs(opentrade.initial_stop_loss_pct - stoploss_current_dist_ratio) > 0.1:
+                self.log(
+                    f"{opentrade.pair}: stoploss is active!",
+                    "INFO"
+                )
+                trade_count += 1
+
+        return trade_count
