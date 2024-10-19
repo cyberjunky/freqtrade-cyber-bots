@@ -46,6 +46,52 @@ def upgrade_config(cfg):
     return cfg
 
 
+def process_data(bot_name, data, storage_list):
+    """
+    """
+
+    for timeperiod in data['data']:
+        timeperioddate = timeperiod['date']
+
+        profitdata = {
+            "profit": timeperiod['abs_profit'],
+            "percentage": timeperiod['rel_profit'] * 100.0,
+            "balance": timeperiod['starting_balance'],
+            "trade-count": timeperiod['trade_count']
+        }
+
+        if timeperioddate not in storage_list:
+            storage_list[timeperioddate] = {}
+
+        storage_list[timeperioddate][bot_name] = profitdata
+
+
+def summarize_and_log(periodtype, storage_list):
+    """
+    """
+
+    for key, timeperiod in storage_list.items():
+        totalprofit = 0.0
+        totaltrades = 0
+        totalbalance = 0.0
+
+        for bot in timeperiod.values():
+            totalprofit += bot['profit']
+            totaltrades += bot['trade-count']
+            totalbalance += bot['balance']
+        
+        totalpercentage = (totalprofit / totalbalance) * 100.0
+
+        message = f"{periodtype} profit of {key}: {totalprofit:.2f} ({totaltrades}) - {totalpercentage:.2f}"
+        for botname, botdata in timeperiod.items():
+            message += f"\n- {botname}: {botdata['profit']:.2f} ({botdata['trade-count']}) - {botdata['percentage']:.2f}"
+
+        logger.info(message, notify=True)
+
+        # Send notification for each period, so the user can see it as seperate messages
+        notification.send_notification()
+
+
 # Start application
 program = Path(__file__).stem
 
@@ -122,7 +168,9 @@ while True:
     username = 'freqtrader'
     password = 'freqtrader'
 
-    datalist={}
+    dailydatalist={}
+    weeklydatalist={}
+    monthlydatalist={}
 
     for server in serverlist:
         server_url = f"http://{server}"
@@ -131,48 +179,18 @@ while True:
         configdata = client.show_config()
         botname = configdata['bot_name']
 
-        dailydata = client.daily(days=5)
-        for day in dailydata['data']:
-            #logger.info(f"Day: {day}")
-            daydate = day['date']
+        dailydata = client.daily(days=2)
+        process_data(botname, dailydata, dailydatalist)
 
-            profitdata = {
-                "profit": day['abs_profit'],
-                "percentage": day['rel_profit'] * 100.0,
-                "balance": day['starting_balance'],
-                "trade-count": day['trade_count']
-            }
-        
-            if daydate not in datalist:
-                datalist[daydate] = {}
+        weeklydata = client.weekly(weeks=2)
+        process_data(botname, weeklydata, weeklydatalist)
 
-            datalist[daydate][botname] = profitdata
+        monthlydata = client.monthly(months=2)
+        process_data(botname, monthlydata, monthlydatalist)
 
-    #logger.info(f"Datalist: {datalist}")
-
-    for key, day in datalist.items():
-        totalprofit = 0.0
-        totaltrades = 0
-        totalbalance = 0.0
-
-        #logger.info(day)
-
-        for bot in day.values():
-            #logger.info(bot)
-            totalprofit += bot['profit']
-            totaltrades += bot['trade-count']
-            totalbalance += bot['balance']
-        
-        totalpercentage = (totalprofit / totalbalance) * 100.0
-
-        message = f"Profit of {key}: {totalprofit:.2f} ({totaltrades}) - {totalpercentage:.2f}"
-        for botname, botdata in day.items():
-            message += f"\n- {botname}: {botdata['profit']:.2f} ({botdata['trade-count']}) - {botdata['percentage']:.2f}"
-
-        logger.info(message, notify=True)
-
-        # Send notification for each day, so the user can see it as seperate messages
-        notification.send_notification()
+    summarize_and_log('Daily', dailydatalist)
+    summarize_and_log('Weekly', weeklydatalist)
+    summarize_and_log('Monthly', monthlydatalist)
 
     if not wait_time_interval(logger, notification, timeint, False):
         break
