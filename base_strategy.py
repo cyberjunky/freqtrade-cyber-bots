@@ -44,7 +44,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_BASE = '1.9.1'
+    STRATEGY_VERSION_BASE = '1.10.0 beta 1'
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -90,7 +90,11 @@ class BaseStrategy(IStrategy):
     # Create custom dictionary for storing run-time data
     custom_info = {}
 
+    # Config related
     config_max_trades = 0
+
+    # Optimize trades (allow new trade when stoploss is activated)
+    enable_improved_trade_count = False
 
 
     def version(self) -> Optional[str]:
@@ -366,12 +370,6 @@ class BaseStrategy(IStrategy):
         :return float: New stoploss value, relative to the current rate
         """
 
-        #sl = self.stoploss
-
-        #pairkey = f"{pair}_{trade.trade_direction}"
-        #if pairkey in self.stoploss_configuration:
-        #    sl = self.stoploss_configuration[pairkey] * self.leverage_configuration[pairkey]
-
         return None
 
 
@@ -595,6 +593,9 @@ class BaseStrategy(IStrategy):
         running in stoploss, meaning no funds are required for additional orders. These funds can be
         used to open already a new trade, optimizing the performance of the wallet.
         """
+
+        if not self.enable_improved_trade_count:
+            return
 
         sl_trade_count = self.get_trade_stoploss_count()
         current_trade_count = self.max_open_trades
