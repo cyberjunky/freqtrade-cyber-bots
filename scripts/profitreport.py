@@ -2,7 +2,7 @@
 """Cyberjunky's 3Commas bot helpers."""
 import argparse
 import configparser
-#import json
+import json
 import os
 import sys
 import time
@@ -24,6 +24,20 @@ def load_config():
     if cfg.read(f"{datadir}/{program}.ini"):
         return cfg
 
+    cfgbotconfig = list()
+    cfgbotconfig.append({
+        "ip": "127.0.0.1",
+        "port": "8080",
+        "username": "user",
+        "password": "pass",
+    })
+    cfgbotconfig.append({
+        "ip": "127.0.0.1",
+        "port": "8081",
+        "username": "user",
+        "password": "pass",
+    })
+
     cfg["settings"] = {
         "timezone": "Europe/Amsterdam",
         "timeinterval": 3600,
@@ -31,7 +45,7 @@ def load_config():
         "logrotate": 7,
         "notifications": False,
         "notify-urls": ["notify-url1"],
-        "botlist": [],
+        "bot-list": json.dumps(cfgbotconfig),
     }
 
     with open(f"{datadir}/{program}.ini", "w") as cfgfile:
@@ -82,9 +96,9 @@ def summarize_and_log(periodtype, storage_list):
         
         totalpercentage = (totalprofit / totalbalance) * 100.0
 
-        message = f"{periodtype} profit of {key}: {totalprofit:.2f} ({totaltrades}) - {totalpercentage:.2f}"
+        message = f"{periodtype} profit of {key}: {totalprofit:.2f} (# {totaltrades}) - {totalpercentage:.2f}%"
         for botname, botdata in timeperiod.items():
-            message += f"\n- {botname}: {botdata['profit']:.2f} ({botdata['trade-count']}) - {botdata['percentage']:.2f}"
+            message += f"\n- {botname}: {botdata['profit']:.2f} (# {botdata['trade-count']}) - {botdata['percentage']:.2f}%"
 
         logger.info(message, notify=True)
 
@@ -156,25 +170,15 @@ while True:
     timeint = int(config.get("settings", "timeinterval"))
     debug = config.getboolean("settings", "debug")
 
-    serverlist = []
-    serverlist.append('192.168.1.144:8081')
-    serverlist.append('192.168.1.144:8082')
-    serverlist.append('192.168.1.144:8083')
-    serverlist.append('192.168.1.144:8084')
-
-    # Prepare API to be able to reload config
-    #url = '192.168.1.144'
-    #port = 8075
-    username = 'freqtrader'
-    password = 'freqtrader'
+    botlist = json.loads(config.get("settings", "bot-list"))
 
     dailydatalist={}
     weeklydatalist={}
     monthlydatalist={}
 
-    for server in serverlist:
-        server_url = f"http://{server}"
-        client = FtRestClient(server_url, username, password)
+    for bot in botlist:
+        server_url = f"http://{bot['ip']}:{bot['port']}"
+        client = FtRestClient(server_url, bot['username'], bot['password'])
 
         configdata = client.show_config()
         botname = configdata['bot_name']
