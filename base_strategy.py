@@ -44,7 +44,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_BASE = '1.10.0 beta 1'
+    STRATEGY_VERSION_BASE = '1.11.0'
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
