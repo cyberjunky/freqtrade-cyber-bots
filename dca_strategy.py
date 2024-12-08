@@ -38,7 +38,7 @@ class DCAStrategy(BaseStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_DCA = '1.12.0'
+    STRATEGY_VERSION_DCA = '1.10.0'
 
     # Max number of safety orders (-1 means disabled)
     max_entry_position_adjustment = -1
