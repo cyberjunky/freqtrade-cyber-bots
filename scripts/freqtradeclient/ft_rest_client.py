@@ -56,6 +56,8 @@ class FtRestClient:
         except ConnectionError:
             logger.warning(f"Connection error - could not connect to {netloc}.")
 
+        return None
+
     def _get(self, apipath, params: ParamsT = None):
         return self._call("GET", apipath, params=params)
 
