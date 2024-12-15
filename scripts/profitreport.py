@@ -181,6 +181,10 @@ while True:
         client = FtRestClient(server_url, bot['username'], bot['password'])
 
         configdata = client.show_config()
+        if configdata is None:
+            logger.warning(f"No data could be fetched from {server_url}...")
+            continue
+
         botname = configdata['bot_name']
 
         dailydata = client.daily(days=2)
