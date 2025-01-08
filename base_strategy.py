@@ -3,10 +3,10 @@
 # isort: skip_file
 # --- Do not remove these libs ---
 #import numpy as np
-#import pandas as pd
+import pandas as pd
 from math import fabs
 from pandas import DataFrame
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from freqtrade.strategy import (BooleanParameter, CategoricalParameter, DecimalParameter,
@@ -44,7 +44,7 @@ class BaseStrategy(IStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_BASE = '1.10.0'
+    STRATEGY_VERSION_BASE = '1.11.0'
 
     # Optimal timeframe for the strategy.
     timeframe = '1h'
@@ -95,6 +95,9 @@ class BaseStrategy(IStrategy):
 
     # Optimize trades (allow new trade when stoploss is activated)
     enable_improved_trade_count = False
+
+    # Set option for logging dataframe and make sure all columns are visible
+    pd.set_option('display.max_columns', None)
 
 
     def version(self) -> Optional[str]:
@@ -280,11 +283,6 @@ class BaseStrategy(IStrategy):
                     "WARNING"
                 )
 
-                # Reset trailing if that's the reason for the exit
-                # TODO: figure out why this is not working!
-                if exit_reason == 'trailing_stop_loss':
-                    trade.adjust_stop_loss(current_price=rate, stoploss=-0.99, initial=True, allow_refresh=True)
-
         return confirmed
 
 
@@ -430,16 +428,20 @@ class BaseStrategy(IStrategy):
         send_notification = False if notify is None else notify
 
         if self.logger:
+            dt_utc = datetime.now(timezone.utc)
+
+            timedmsg = f"UTC {dt_utc.strftime('%Y-%m-%d %H:%M:%S')} - {message}"
+
             match level:
                 case 'INFO':
-                    self.logger.info(message)
+                    self.logger.info(timedmsg)
                 case 'DEBUG':
-                    self.logger.debug(message)
+                    self.logger.debug(timedmsg)
                 case 'WARNING':
-                    self.logger.warning(message)
+                    self.logger.warning(timedmsg)
                     send_notification = True if notify is None else notify # Force notification
                 case 'ERROR':
-                    self.logger.error(message)
+                    self.logger.error(timedmsg)
                     send_notification = True if notify is None else notify # Force notification
 
         if send_notification:
@@ -635,13 +637,13 @@ class BaseStrategy(IStrategy):
 
             self.log(
                 f"{opentrade.pair}: current_rate is {current_rate}. Stoploss is {opentrade.stop_loss} ({opentrade.stop_loss_pct}%). SL distance is {stoploss_current_dist} with ratio {stoploss_current_dist_ratio}.",
-                "INFO"
+                "DEBUG"
             )
 
             if fabs(opentrade.initial_stop_loss_pct - stoploss_current_dist_ratio) > 0.1:
                 self.log(
                     f"{opentrade.pair}: stoploss is active!",
-                    "INFO"
+                    "DEBUG"
                 )
                 trade_count += 1
 
