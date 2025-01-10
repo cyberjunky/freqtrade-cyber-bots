@@ -661,6 +661,8 @@ class DCAStrategy(BaseStrategy):
             )
             return None
 
+        rounddigits = self.get_round_digits(trade.pair)
+
         openorders = len(self.custom_info[custompairkey]['open_safety_orders'])
         if openorders > 0:
             pricedeviation = self.custom_info[custompairkey]['open_safety_orders'][0]['current_deviation']
@@ -668,8 +670,8 @@ class DCAStrategy(BaseStrategy):
             volume = self.custom_info[custompairkey]['open_safety_orders'][0]['volume']
 
             self.log(
-                f"{trade.pair}: current profit {pricedeviation:.4f}% reached next SO {count_of_entries} at {totaldeviation:.4f}% "
-                f"and calculated volume of {volume}.",
+                f"{trade.pair}: current profit {pricedeviation:.4f}% reached next SO {count_of_entries}/{max_orders} at {totaldeviation:.4f}% "
+                f"and calculated volume of {volume:.{rounddigits}f}.",
                 notify=True
             )
 
@@ -742,14 +744,14 @@ class DCAStrategy(BaseStrategy):
             self.log(
                 f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached SO {count_of_entries}/{max_orders} "
                 f"at {self.custom_info[custompairkey]['add_safety_order_on_profit_percentage']:.4f}% (trailing from {next_safety_order_percentage:.4f}%) "
-                f"and calculated volume of {volume} for order 1/{len(orderdata)}.",
+                f"and calculated volume of {volume:.{rounddigits}f} for order 1/{len(orderdata)}.",
                 notify=True
             )
         else:
             self.log(
                 f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached SO {count_of_entries}/{max_orders} "
                 f"at {next_safety_order_percentage:.4f}% "
-                f"and calculated volume of {volume} for order 1/{len(orderdata)}.",
+                f"and calculated volume of {volume:.{rounddigits}f} for order 1/{len(orderdata)}.",
                 notify=True
             )
 
