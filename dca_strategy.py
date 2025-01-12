@@ -38,7 +38,7 @@ class DCAStrategy(BaseStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_DCA = '1.10.0'
+    STRATEGY_VERSION_DCA = '1.10.1'
 
     # Max number of safety orders (-1 means disabled)
     max_entry_position_adjustment = -1
@@ -159,6 +159,9 @@ class DCAStrategy(BaseStrategy):
 
         # Make sure the contents of the Safety Order configuration is correct
         for pairvalue in self.safety_order_configuration.values():
+            if 'initial_so_amount' not in pairvalue.keys():
+                pairvalue['initial_so_amount'] = config['stake_amount']
+
             for k, v in pairvalue.items():
                 if k in ('dca_table'):
                     continue
@@ -651,13 +654,14 @@ class DCAStrategy(BaseStrategy):
 
         dca_table = trade.get_custom_data(key='dca_table')
         max_orders = len(dca_table)
-        #if count_of_safety_orders >= self.safety_order_configuration[configpairkey]['max_so']:
         if count_of_safety_orders >= max_orders:
             self.log(
                 f"{trade.pair}: reached max number ({max_orders}) of Safety Orders.",
                 "DEBUG"
             )
             return None
+
+        rounddigits = self.get_round_digits(trade.pair)
 
         openorders = len(self.custom_info[custompairkey]['open_safety_orders'])
         if openorders > 0:
@@ -666,8 +670,8 @@ class DCAStrategy(BaseStrategy):
             volume = self.custom_info[custompairkey]['open_safety_orders'][0]['volume']
 
             self.log(
-                f"{trade.pair}: current profit {pricedeviation:.4f}% reached next SO {count_of_entries} at {totaldeviation:.4f}% "
-                f"and calculated volume of {volume}.",
+                f"{trade.pair}: current profit {pricedeviation:.4f}% reached next SO {count_of_entries}/{max_orders} at {totaldeviation:.4f}% "
+                f"and calculated volume of {volume:.{rounddigits}f}.",
                 notify=True
             )
 
@@ -738,16 +742,16 @@ class DCAStrategy(BaseStrategy):
         volume = orderdata[0]['volume']
         if tso_enabled:
             self.log(
-                f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached next SO {count_of_entries} "
+                f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached SO {count_of_entries}/{max_orders} "
                 f"at {self.custom_info[custompairkey]['add_safety_order_on_profit_percentage']:.4f}% (trailing from {next_safety_order_percentage:.4f}%) "
-                f"and calculated volume of {volume} for order 1/{len(orderdata)}.",
+                f"and calculated volume of {volume:.{rounddigits}f} for order 1/{len(orderdata)}.",
                 notify=True
             )
         else:
             self.log(
-                f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached next SO {count_of_entries} "
+                f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached SO {count_of_entries}/{max_orders} "
                 f"at {next_safety_order_percentage:.4f}% "
-                f"and calculated volume of {volume} for order 1/{len(orderdata)}.",
+                f"and calculated volume of {volume:.{rounddigits}f} for order 1/{len(orderdata)}.",
                 notify=True
             )
 
@@ -789,7 +793,7 @@ class DCAStrategy(BaseStrategy):
                 self.safety_order_configuration[pk] = {}
 
             for k, v in pv.items():
-                if k in ('price_deviation', 'volume_scale', 'step_scale', 'max_so'):
+                if k in ('initial_so_amount', 'price_deviation', 'volume_scale', 'step_scale', 'max_so'):
                     self.safety_order_configuration[pk][k] = v
                     self.log(f"Set safety order configuration key '{k}' for pair '{pk}' to value '{v}'")
                 else:
