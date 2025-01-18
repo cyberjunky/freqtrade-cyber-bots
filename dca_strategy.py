@@ -38,7 +38,7 @@ class DCAStrategy(BaseStrategy):
     # Check the documentation or the Sample strategy to get the latest version.
     INTERFACE_VERSION = 3
 
-    STRATEGY_VERSION_DCA = '1.10.1'
+    STRATEGY_VERSION_DCA = '1.11.0'
 
     # Max number of safety orders (-1 means disabled)
     max_entry_position_adjustment = -1
@@ -399,7 +399,7 @@ class DCAStrategy(BaseStrategy):
 
             if so_amount < min_entry_amount or so_cost < min_entry_cost:
                 self.log(
-                    f"{pair}: trading limit for first SO (on -{so_deviation:.2f}%) cannot be statisfied based on {self.trade_bo_so_ratio} ratio. "
+                    f"{pair}: trading limit for first SO (on {so_deviation:.2f}%) cannot be statisfied based on {self.trade_bo_so_ratio} ratio. "
                     f"Safety Order amount {so_amount} (based on BO amount {amount}) is lower than {min_entry_amount} and/or "
                     f"cost {so_cost} is lower than {min_entry_cost}. "
                     f"Not starting this trade.",
@@ -700,6 +700,7 @@ class DCAStrategy(BaseStrategy):
                 if self.custom_info[custompairkey]['last_profit_percentage'] != 0.0:
                     self.custom_info[custompairkey]['last_profit_percentage'] = float(0.0)
                     self.custom_info[custompairkey]['add_safety_order_on_profit_percentage'] = float(0.0)
+                    self.custom_info[custompairkey]['trailing_start_datetime'] = datetime.min
 
                     self.log(
                         f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% went above "
@@ -721,6 +722,11 @@ class DCAStrategy(BaseStrategy):
                     notify=send_notification
                 )
 
+                # Set start time only when trailing starts
+                if (self.custom_info[custompairkey]['last_profit_percentage'] == 0.0):
+                    self.custom_info[custompairkey]['trailing_start_datetime'] = datetime.now()
+
+                # Update trailing position
                 self.custom_info[custompairkey]['last_profit_percentage'] = current_entry_profit_percentage
                 self.custom_info[custompairkey]['add_safety_order_on_profit_percentage'] = new_threshold
 
@@ -741,10 +747,13 @@ class DCAStrategy(BaseStrategy):
 
         volume = orderdata[0]['volume']
         if tso_enabled:
+            trailingstart = self.custom_info[custompairkey]['trailing_start_datetime']
             self.log(
-                f"{trade.pair}: current profit {current_entry_profit_percentage:.4f}% reached SO {count_of_entries}/{max_orders} "
-                f"at {self.custom_info[custompairkey]['add_safety_order_on_profit_percentage']:.4f}% (trailing from {next_safety_order_percentage:.4f}%) "
-                f"and calculated volume of {volume:.{rounddigits}f} for order 1/{len(orderdata)}.",
+                f"{trade.pair}: bounced from {self.custom_info[custompairkey]['last_profit_percentage']:.4f}% and "
+                f"current profit {current_entry_profit_percentage:.4f}% reached SO {count_of_entries}/{max_orders} "
+                f"at {self.custom_info[custompairkey]['add_safety_order_on_profit_percentage']:.4f}% "
+                f"(trailing from {next_safety_order_percentage:.4f}% at {trailingstart.strftime('%Y-%m-%d %H:%M:%S')}). "
+                f"Calculated volume of {volume:.{rounddigits}f} for order 1/{len(orderdata)}.",
                 notify=True
             )
         else:
@@ -759,6 +768,7 @@ class DCAStrategy(BaseStrategy):
         self.custom_info[custompairkey]['last_profit_percentage'] = 0.0
         self.custom_info[custompairkey]['next_safety_order_profit_percentage'] = 0.0
         self.custom_info[custompairkey]['add_safety_order_on_profit_percentage'] = 0.0
+        self.custom_info[custompairkey]['trailing_start_datetime'] = datetime.min
 
         # Store order data. Keep in mind orders can run into a timeout, and need to be placed again
         self.custom_info[custompairkey]['open_safety_orders'] = orderdata
@@ -1158,6 +1168,7 @@ class DCAStrategy(BaseStrategy):
         self.custom_info[custom_pair_key]['last_profit_percentage'] = float(0.0) # Keep track of profit percentage for every cycle/update
         self.custom_info[custom_pair_key]['next_safety_order_profit_percentage'] = float(0.0) # Percentage on which the next SO is configured
         self.custom_info[custom_pair_key]['add_safety_order_on_profit_percentage'] = float(0.0) # Percentage on which the next SO should be bought, based on trailing
+        self.custom_info[custom_pair_key]['trailing_start_datetime'] = datetime.min # Datetime trailing started
         self.custom_info[custom_pair_key]['open_safety_orders'] = list() # List of open Safety Orders to buy
 
 
