@@ -223,6 +223,7 @@ class DCAStrategy(BaseStrategy):
                 # Check if there is any stoploss configured. If so, make sure we can process it by enabling the functioncall
                 stoploss = self.profit_configuration[pairkey][l]['stoploss-initial']
                 if stoploss > 0.0:
+                    self.log(f"Enabling custom stoploss because of profit configuration!")
                     self.use_custom_stoploss = True
                     break
 
@@ -265,7 +266,7 @@ class DCAStrategy(BaseStrategy):
                     so_total_deviation = dca_tbl[so_count - 1]['total_deviation_current']
                     
                     self.log(
-                        f"SO {so_count} | Deviation {so_step_deviation}% ({so_total_deviation}%) | Order volume {so_volume} ({so_total_volume})"
+                        f"SO {so_count} | Deviation {so_step_deviation:.2f}% ({so_total_deviation:.2f}%) | Order volume {so_volume:.8f} ({so_total_volume:.8f})"
                     )
 
                     so_count += 1
@@ -478,13 +479,13 @@ class DCAStrategy(BaseStrategy):
 
         # Get SL values from config
         current_profit_percentage = current_profit * 100.0
-        sl_enabled, activation_percentage, sl_percentage, sl_factor = self.get_stoploss_config(current_profit_percentage, configpairkey)
+        sl_enabled, activation_percentage, sl_percentage, sl_factor, sl_min_orders = self.get_stoploss_config(current_profit_percentage, configpairkey)
 
         # Call base
         new_stoploss = super().custom_stoploss(pair, trade, current_time, current_rate, current_profit, after_fill)
 
         # Calculate new stoploss, when enabled and profit has increased
-        if sl_enabled:
+        if sl_enabled and trade.nr_of_successful_entries >= sl_min_orders:
             if current_profit_percentage > self.custom_info[custompairkey]['last_profit_percentage']:
                 # Calculate stoploss percentage based on the config and current profit
                 stoploss_percentage = sl_percentage + ((current_profit_percentage - activation_percentage) * sl_factor)
@@ -926,6 +927,7 @@ class DCAStrategy(BaseStrategy):
         activation_percentage = 0.0
         initial_stoploss = 0.0
         factor = 0.0
+        order_threshold = 0
 
         # Check which key to use; pair or default. If neither is present, assume the user doesn't
         # want to use Trailing Safety Order
@@ -947,8 +949,9 @@ class DCAStrategy(BaseStrategy):
             activation_percentage = l['activation-percentage']
             initial_stoploss = l['stoploss-initial']
             factor = l['stoploss-increment-factor']
+            order_threshold = l['min-order-threshold-stoploss']
 
-        return (initial_stoploss > 0.0), activation_percentage, initial_stoploss, factor
+        return (initial_stoploss > 0.0), activation_percentage, initial_stoploss, factor, order_threshold
 
 
     def get_profit_config(self, profit_percentage, current_profit_percentage, config_pair_key) -> tuple[bool, float, float]:
